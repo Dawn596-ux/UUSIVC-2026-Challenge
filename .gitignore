@@ -1,4 +1,28 @@
-".idea/workspace.xml" 
-".idea/workspace.xml" 
-pretrained_ckpt/*.pth 
-.idea/workspace.xml 
+# IDE
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Pretrained model weights (large binaries)
+pretrained_ckpt/*.pth
+pretrained_ckpt/*.pt
+
+# Training outputs
+outputs/
+
+# Environment
+.env
+*.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (managed via UUSIVC2026_DATA_ROOT env var)
+data/
