@@ -79,6 +79,34 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use all labeled TRAIN data for training and skip per-epoch validation/best-checkpoint selection.",
     )
+    parser.add_argument(
+        "--debug",
+        nargs="+",
+        default=None,
+        choices=["fast", "full", "deep"],
+        help="Enable debug mode. Levels: fast (run N steps and stop), "
+        "full (limited samples + few epochs, full pipeline), "
+        "deep (full data strategy + gradient/activation/performance diagnostics). "
+        "Combine with a space, e.g. --debug deep fast.",
+    )
+    parser.add_argument(
+        "--debug-steps",
+        type=int,
+        default=10,
+        help="Max training steps for --debug fast (default: 10).",
+    )
+    parser.add_argument(
+        "--debug-samples",
+        type=int,
+        default=100,
+        help="Max samples per task for --debug full/deep (default: 100).",
+    )
+    parser.add_argument(
+        "--debug-epochs",
+        type=int,
+        default=3,
+        help="Max epochs for --debug full/deep (default: 3).",
+    )
     return parser.parse_args()
 
 
@@ -199,7 +227,53 @@ def resolve_device(device_name: str) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def apply_debug_config(
+        cfg: Dict[str, Any],
+        args: argparse.Namespace,
+) -> Optional[Dict[str, Any]]:
+    """Apply debug-mode overrides to cfg and return a debug_cfg dict for the Trainer.
+
+    Returns None when debug is not active (normal training).
+    """
+    if not args.debug:
+        return None
+
+    level = set(args.debug)
+
+    diagnostics = None
+    if "deep" in level:
+        diagnostics = {
+            "grad_monitor": True,
+            "act_monitor": True,
+            "perf_monitor": True,
+            "log_interval": 1,
+        }
+
+    debug_cfg: Dict[str, Any] = {
+        "enabled": True,
+        "levels": sorted(level),
+        "max_steps": args.debug_steps if "fast" in level else None,
+        "max_epochs": args.debug_epochs if "full" in level or "deep" in level else None,
+        "max_samples_per_task": args.debug_samples if "full" in level or "deep" in level else None,
+        "diagnostics": diagnostics,
+        "keep_best": 1,
+    }
+
+    # --- override cfg values (same pattern as --full-train) ---
+    if debug_cfg["max_epochs"] is not None:
+        cfg.setdefault("train", {})["max_epochs"] = debug_cfg["max_epochs"]
+
+    if "full" in level or "deep" in level:
+        cfg.setdefault("trainer", {})["keep_best"] = 1
+        cfg.setdefault("trainer", {})["log_interval"] = 1
+        # signal the manifest builder to truncate per-task samples
+        cfg.setdefault("data", {})["debug_max_samples_per_task"] = debug_cfg["max_samples_per_task"]
+
+    return debug_cfg
+
+
 def main() -> None:
+
     args = parse_args()
     stage = args.stage or "stage1_seg"
     if args.config is None:
@@ -220,6 +294,8 @@ def main() -> None:
         cfg.setdefault("train", {})["require_validation"] = False
         cfg.setdefault("trainer", {})["keep_best"] = 0
 
+    debug_cfg = apply_debug_config(cfg, args)
+
     save_dir = cfg["trainer"]["save_dir"]
     os.makedirs(save_dir, exist_ok=True)
 
@@ -232,6 +308,16 @@ def main() -> None:
     print(f"[Info] Using device: {device}")
     print(f"[Info] Loading config: {args.config}")
     print(f"[Info] Running stage: {stage}")
+    if debug_cfg:
+        print(f"[Debug] Mode active: levels={debug_cfg['levels']}")
+        if debug_cfg["max_steps"]:
+            print(f"[Debug]   max_steps={debug_cfg['max_steps']}")
+        if debug_cfg["max_epochs"]:
+            print(f"[Debug]   max_epochs={debug_cfg['max_epochs']}")
+        if debug_cfg["max_samples_per_task"]:
+            print(f"[Debug]   max_samples_per_task={debug_cfg['max_samples_per_task']}")
+        if debug_cfg["diagnostics"]:
+            print(f"[Debug]   diagnostics=grad+act+perf")
 
     if stage == "stage1_seg":
         loaders = build_stage1_seg_loaders(cfg["data"])
@@ -367,6 +453,7 @@ def main() -> None:
             best_epoch=resume_best_epoch,
             monitor_metric=cfg["trainer"].get("monitor_metric", "mean_score"),
             keep_best=cfg["trainer"].get("keep_best", 3),
+            debug_cfg=debug_cfg,
         )
     else:
         trainer = Stage2ClsTrainer(
@@ -386,6 +473,7 @@ def main() -> None:
             monitor_metric=cfg["trainer"].get("monitor_metric", "mean_score"),
             keep_best=cfg["trainer"].get("keep_best", 3),
             label_smoothing=cfg.get("loss", {}).get("cls_label_smoothing", 0.0),
+            debug_cfg=debug_cfg,
         )
 
     for line in setup_log:

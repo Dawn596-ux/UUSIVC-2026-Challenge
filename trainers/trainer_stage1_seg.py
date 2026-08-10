@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from models.losses.multi_task_loss import Stage1SegLoss
 from utils.checkpoint import save_checkpoint, save_topk_best_checkpoint
+from utils.diagnostics import DiagnosticsConfig, DiagnosticsHook
 from utils.freeze import set_modules_eval_by_keywords
 from utils.logger import get_logger
 from utils.metrics import compute_binary_seg_score_from_logits, compute_ceus_official_score_from_logits
@@ -51,6 +52,7 @@ class Stage1SegTrainer:
         best_epoch: int = -1,
         monitor_metric: str = "mean_score",
         keep_best: int = 3,
+        debug_cfg: Optional[Dict[str, Any]] = None,
     ):
         self.model = model.to(device)
         self.optimizer = optimizer
@@ -78,6 +80,13 @@ class Stage1SegTrainer:
         self.monitor_metric = monitor_metric
         self.keep_best = max(int(keep_best), 0)
         self.best_records: List[Dict[str, Any]] = []
+
+        # --- debug mode ---
+        self._debug_cfg = debug_cfg or {}
+        self._max_steps: Optional[int] = self._debug_cfg.get("max_steps")
+        self._debug_diagnostics: Optional[Dict[str, Any]] = self._debug_cfg.get("diagnostics")
+        self._global_step: int = 0
+        self._early_stop: bool = False
 
     def _move_batch_to_device(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         moved = {}
@@ -297,24 +306,55 @@ class Stage1SegTrainer:
         running_loss = 0.0
         running_ce = 0.0
         running_dice_loss = 0.0
+        steps_done = 0
+
+        # --- debug: diagnostics hook ---
+        diag_hook: Optional[DiagnosticsHook] = None
+        if self._debug_diagnostics:
+            diag_cfg = DiagnosticsConfig(
+                grad_monitor=bool(self._debug_diagnostics.get("grad_monitor")),
+                act_monitor=bool(self._debug_diagnostics.get("act_monitor")),
+                perf_monitor=bool(self._debug_diagnostics.get("perf_monitor")),
+                log_interval=int(self._debug_diagnostics.get("log_interval", 1)),
+            )
+            diag_hook = DiagnosticsHook(self.model, diag_cfg, self.device)
+            diag_hook.__enter__()
 
         pbar = tqdm(range(steps_per_epoch), desc=f"Train Epoch {epoch}", leave=False)
         for step_idx in pbar:
+            # --- debug: early stop ---
+            if self._max_steps is not None and self._global_step >= self._max_steps:
+                self._early_stop = True
+                break
+
             loader_name = train_schedule[step_idx]
             loader = train_loaders[loader_name]
             batch = self._safe_next(loader_name, loader, iterator_dict)
+
+            # --- debug: perf timing start ---
+            if diag_hook is not None:
+                diag_hook.start_step_timer()
+                diag_hook.record_data_loading_done()
 
             log_dict = self.train_one_step(batch)
             running_loss += log_dict["loss_total"]
             running_ce += log_dict["loss_ce"]
             running_dice_loss += log_dict["loss_dice"]
+            steps_done += 1
+
+            # --- debug: perf timing end ---
+            if diag_hook is not None:
+                # record_forward_done covers the full compute (forward+backward+optimizer)
+                diag_hook.record_forward_done()
+
+            self._global_step += 1
 
             if self.scheduler is not None:
                 self.scheduler.step()
 
-            avg_loss = running_loss / (step_idx + 1)
-            avg_ce = running_ce / (step_idx + 1)
-            avg_dice_loss = running_dice_loss / (step_idx + 1)
+            avg_loss = running_loss / steps_done
+            avg_ce = running_ce / steps_done
+            avg_dice_loss = running_dice_loss / steps_done
 
             pbar.set_postfix(
                 loss=f"{avg_loss:.4f}",
@@ -323,6 +363,15 @@ class Stage1SegTrainer:
                 task=loader_name,
             )
 
+            # --- debug: diagnostics output ---
+            if diag_hook is not None and (self._global_step % diag_cfg.log_interval == 0):
+                if diag_cfg.grad_monitor:
+                    diag_hook.log_gradient_stats(self._global_step)
+                if diag_cfg.act_monitor:
+                    diag_hook.log_activation_stats(self._global_step)
+                if diag_cfg.perf_monitor:
+                    diag_hook.log_performance(self._global_step)
+
             if (step_idx + 1) % self.log_interval == 0:
                 self.logger.info(
                     f"[Epoch {epoch} | Step {step_idx + 1}/{steps_per_epoch}] "
@@ -330,10 +379,20 @@ class Stage1SegTrainer:
                     f"loss={avg_loss:.4f} ce={avg_ce:.4f} dice_loss={avg_dice_loss:.4f}"
                 )
 
+            # --- debug: check early stop after step ---
+            if self._max_steps is not None and self._global_step >= self._max_steps:
+                self._early_stop = True
+                break
+
+        # --- debug: teardown diagnostics hook ---
+        if diag_hook is not None:
+            diag_hook.__exit__()
+
+        denom = max(steps_done, 1)
         return {
-            "train_loss": running_loss / steps_per_epoch,
-            "train_ce": running_ce / steps_per_epoch,
-            "train_dice_loss": running_dice_loss / steps_per_epoch,
+            "train_loss": running_loss / denom,
+            "train_ce": running_ce / denom,
+            "train_dice_loss": running_dice_loss / denom,
         }
 
     def fit(self, loaders: Dict[str, Dict[str, Any]]):
@@ -351,6 +410,21 @@ class Stage1SegTrainer:
         for epoch in range(self.start_epoch, self.max_epochs + 1):
             start_time = time.time()
             train_log = self.train_one_epoch(epoch, train_loaders)
+
+            # --- debug: early stop ---
+            if self._early_stop:
+                self.logger.info(
+                    f"[Debug] Fast mode stopped after {self._global_step} steps. "
+                    f"train_loss={train_log['train_loss']:.4f} "
+                    f"train_ce={train_log['train_ce']:.4f} "
+                    f"train_dice_loss={train_log['train_dice_loss']:.4f}"
+                )
+                print(
+                    f"[Debug] Fast mode stopped after {self._global_step} steps. "
+                    f"avg loss={train_log['train_loss']:.4f}"
+                )
+                break
+
             val_log = self.validate(val_loaders) if has_val else {}
             epoch_time = time.time() - start_time
 

@@ -12,7 +12,7 @@ import os
 import random
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 
 PUBLIC_DIR = "Challenge_Data_Public"
@@ -185,6 +185,7 @@ def write_fixed_manifests(
     phases: Iterable[str] = ("train", "val"),
     local_val_fraction: float = 0.1,
     seed: int = 2024,
+    max_samples_per_task: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Materialize labeled train/local-val manifests from TRAIN package data."""
     data_root = resolve_data_root(data_root_like)
@@ -203,6 +204,8 @@ def write_fixed_manifests(
         for task, lines in split_buckets.get(phase, {}).items():
             if not lines:
                 continue
+            if max_samples_per_task is not None and len(lines) > max_samples_per_task:
+                lines = lines[:max_samples_per_task]
             cfg_base = TASK_TO_CFG_KEY[task]
             path = output_dir / f"{phase}_{task}.txt"
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -219,12 +222,14 @@ def expand_fixed_uusivc_data_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     out_dir = cfg.get("manifest_cache_dir", "./outputs/uusivc2026_fixed/manifests")
     val_fraction = float(cfg.get("local_val_fraction", 0.1))
     seed = int(cfg.get("split_seed", cfg.get("seed", 2024)))
+    max_samples = cfg.get("debug_max_samples_per_task", None)
     generated = write_fixed_manifests(
         data_root,
         out_dir,
         phases=("train", "val"),
         local_val_fraction=val_fraction,
         seed=seed,
+        max_samples_per_task=max_samples,
     )
     expanded = dict(cfg)
     expanded.update(generated)
