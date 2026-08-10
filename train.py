@@ -268,6 +268,9 @@ def apply_debug_config(
         cfg.setdefault("trainer", {})["log_interval"] = 1
         # signal the manifest builder to truncate per-task samples
         cfg.setdefault("data", {})["debug_max_samples_per_task"] = debug_cfg["max_samples_per_task"]
+        # disable balanced samplers — truncated samples may all be one class
+        cfg.setdefault("data", {})["use_balanced_sampler_image_cls"] = False
+        cfg.setdefault("data", {})["use_balanced_sampler_video_cls"] = False
 
     return debug_cfg
 
