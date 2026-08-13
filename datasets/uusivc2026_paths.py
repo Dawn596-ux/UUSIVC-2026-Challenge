@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -147,25 +147,128 @@ def _manifest_line(entry: Dict[str, Any], root: Path) -> str | None:
     return None
 
 
-def _split_lines(lines: List[str], val_fraction: float, seed: int) -> tuple[List[str], List[str]]:
+def derive_group_key(entry: Dict[str, Any]) -> str:
+    """Return a patient/case group key for a labeled entry.
+
+    The released JSON has no ``patient_id`` field, so patient identity must be
+    derived from the input filename. The convention is NOT uniform across the
+    dataset — it depends on task (and public vs private source):
+
+    - ``ceus_seg`` (private): ``<patient>_<timestamp>.npy`` -> strip the timestamp.
+    - ``video_seg``: private ``X001.npy`` (no suffix) vs public CAMUS
+      ``patient0001_2CH.npy`` -> strip the view label when present.
+    - ``image_cls`` / ``image_seg``: multi-frame uses ``<label>_<case>_<frame>``
+      (two underscores -> strip the frame index); single-image uses
+      ``<label>_<case>`` (one underscore -> keep the whole stem as the case id).
+
+    ``data_partition_group`` (``private_train`` vs ``public_all``) is prepended so a
+    private and a public sample that happen to share a name are never merged.
+    """
+    task = entry.get("task") or ""
+    input_rel = entry.get("input_path_relative") or ""
+    stem = input_rel.split("/")[-1].split(".")[0]
+    organ = entry.get("organ") or entry.get("dataset_name") or task
+    partition = entry.get("data_partition_group") or ""
+
+    if task in ("ceus_seg", "video_seg"):
+        patient = stem.rsplit("_", 1)[0]  # strip trailing timestamp / view label
+    elif task in ("image_cls", "image_seg"):
+        patient = stem.rsplit("_", 1)[0] if stem.count("_") >= 2 else stem
+    else:  # ceus_cls
+        patient = stem
+
+    return f"{partition}/{organ}/{patient}"
+
+
+def _group_rep_label(group: List[Dict[str, Any]]) -> Optional[int]:
+    labels = [e.get("class_label_index") for e in group if e.get("class_label_index") is not None]
+    if not labels:
+        return None
+    return int(max(set(labels), key=labels.count))
+
+
+def _groups_have_label(groups: Dict[str, List[Dict[str, Any]]]) -> bool:
+    return any(_group_rep_label(g) is not None for g in groups.values())
+
+
+def split_entries(
+    entries: List[Dict[str, Any]],
+    val_fraction: float,
+    seed: int,
+    mode: str = "grouped_stratified",
+    group_key_fn=derive_group_key,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Split one task's entries into (train_entries, val_entries).
+
+    ``mode``:
+    - ``random``: sample-level shuffle split (legacy behavior).
+    - ``grouped``: whole patient/case groups are assigned to one split only.
+    - ``grouped_stratified``: grouped, and classification labels stay balanced
+      across splits (groups are bucketed by their representative label first).
+    """
     if val_fraction <= 0:
-        return lines, []
-    if len(lines) <= 1:
-        return lines, lines[:]
-    indices = list(range(len(lines)))
+        return list(entries), []
+    if len(entries) <= 1:
+        return list(entries), list(entries)
+
     rng = random.Random(seed)
-    rng.shuffle(indices)
-    val_count = max(1, int(round(len(lines) * val_fraction)))
-    val_indices = set(indices[:val_count])
-    train_lines = [line for idx, line in enumerate(lines) if idx not in val_indices]
-    val_lines = [line for idx, line in enumerate(lines) if idx in val_indices]
-    if not train_lines:
-        train_lines = lines[:]
-    return train_lines, val_lines
+
+    if mode == "random":
+        indices = list(range(len(entries)))
+        rng.shuffle(indices)
+        val_count = max(1, int(round(len(entries) * val_fraction)))
+        val_indices = set(indices[:val_count])
+        train = [e for i, e in enumerate(entries) if i not in val_indices]
+        val = [e for i, e in enumerate(entries) if i in val_indices]
+        if not train:
+            train = list(entries)
+        return train, val
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for e in entries:
+        key = str(group_key_fn(e))
+        groups.setdefault(key, []).append(e)
+    group_keys = sorted(groups.keys())
+    rng.shuffle(group_keys)
+
+    if mode == "grouped_stratified" and _groups_have_label(groups):
+        by_label: Dict[int, List[str]] = defaultdict(list)
+        for key in group_keys:
+            label = _group_rep_label(groups[key])
+            if label is not None:
+                by_label[label].append(key)
+        train_keys: List[str] = []
+        val_keys: List[str] = []
+        for label in sorted(by_label.keys()):
+            keys = by_label[label]
+            rng.shuffle(keys)
+            val_count = max(1, int(round(len(keys) * val_fraction)))
+            if val_count >= len(keys):
+                val_count = max(0, len(keys) - 1)
+            val_keys.extend(keys[:val_count])
+            train_keys.extend(keys[val_count:])
+    else:
+        val_count = max(1, int(round(len(group_keys) * val_fraction)))
+        if val_count >= len(group_keys):
+            val_count = max(0, len(group_keys) - 1)
+        val_keys = group_keys[:val_count]
+        train_keys = group_keys[val_count:]
+
+    train = [e for key in train_keys for e in groups[key]]
+    val = [e for key in val_keys for e in groups[key]]
+    if not train:
+        train = list(entries)
+    return train, val
 
 
-def _collect_labeled_training_lines(data_root: Path) -> Dict[str, List[str]]:
-    buckets: Dict[str, List[str]] = defaultdict(list)
+def _collect_labeled_training_entries(data_root: Path) -> Dict[str, List[Dict[str, Any]]]:
+    """Collect full labeled entries (public + train) bucketed by task.
+
+    Each entry keeps all original metadata and gains a ``_root`` field pointing at
+    the physical data root of its source phase (public/train resolve to different
+    directories), so downstream consumers can resolve absolute input/mask paths.
+    """
+    buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for source_phase in ("public", "train"):
         entries = load_phase_entries(data_root, source_phase)
         root = phase_data_root(data_root, source_phase)
@@ -173,9 +276,11 @@ def _collect_labeled_training_lines(data_root: Path) -> Dict[str, List[str]]:
             task = entry.get("task")
             if task not in TASK_TO_CFG_KEY:
                 continue
-            line = _manifest_line(entry, root)
-            if line is not None:
-                buckets[task].append(line)
+            if _manifest_line(entry, root) is None:
+                continue
+            copy = dict(entry)
+            copy["_root"] = str(root)
+            buckets[task].append(copy)
     return buckets
 
 
@@ -186,24 +291,43 @@ def write_fixed_manifests(
     local_val_fraction: float = 0.1,
     seed: int = 2024,
     max_samples_per_task: Optional[int] = None,
+    split_mode: str = "grouped_stratified",
 ) -> Dict[str, Dict[str, Any]]:
-    """Materialize labeled train/local-val manifests from TRAIN package data."""
+    """Materialize labeled train/local-val manifests from TRAIN package data.
+
+    Besides the per-task ``{phase}_{task}.txt`` manifests (unchanged format, kept
+    for backward compatibility with train.py/test.py), this also writes:
+
+    - ``val_entries.json``: full metadata for every val entry (used by predict_val.py)
+    - ``split_summary.json``: per-task sample/group/label counts for manual inspection
+    """
     data_root = resolve_data_root(data_root_like)
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    labeled_buckets = _collect_labeled_training_lines(data_root)
-    split_buckets: Dict[str, Dict[str, List[str]]] = {"train": {}, "val": {}}
-    for task, lines in labeled_buckets.items():
-        train_lines, val_lines = _split_lines(lines, local_val_fraction, seed)
-        split_buckets["train"][task] = train_lines
-        split_buckets["val"][task] = val_lines
+    labeled_buckets = _collect_labeled_training_entries(data_root)
+    split_buckets: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"train": {}, "val": {}}
+    val_entries: List[Dict[str, Any]] = []
+    summary: Dict[str, Any] = {}
+    for task, entries in labeled_buckets.items():
+        train_entries, val_entries_task = split_entries(
+            entries, local_val_fraction, seed, mode=split_mode
+        )
+        split_buckets["train"][task] = train_entries
+        split_buckets["val"][task] = val_entries_task
+        val_entries.extend(val_entries_task)
+        summary[task] = _summarize_split(train_entries, val_entries_task)
 
     built: Dict[str, Dict[str, Any]] = {}
     for phase in phases:
-        for task, lines in split_buckets.get(phase, {}).items():
-            if not lines:
+        for task, entries in split_buckets.get(phase, {}).items():
+            if not entries:
                 continue
+            lines = []
+            for entry in entries:
+                line = _manifest_line(entry, Path(entry["_root"]))
+                if line is not None:
+                    lines.append(line)
             if max_samples_per_task is not None and len(lines) > max_samples_per_task:
                 lines = lines[:max_samples_per_task]
             cfg_base = TASK_TO_CFG_KEY[task]
@@ -213,7 +337,36 @@ def write_fixed_manifests(
                 "dataset_name": TASK_DATASET_NAME[task],
                 "list_file": str(path),
             }
+
+    val_path = output_dir / "val_entries.json"
+    val_path.write_text(json.dumps(val_entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_path = output_dir / "split_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return built
+
+
+def _summarize_split(
+    train_entries: List[Dict[str, Any]], val_entries: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    def label_counter(entries: List[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Counter = Counter()
+        for e in entries:
+            label = e.get("class_label_index")
+            if label is not None:
+                counts[str(label)] += 1
+        return dict(counts)
+
+    def group_count(entries: List[Dict[str, Any]]) -> int:
+        return len({derive_group_key(e) for e in entries})
+
+    return {
+        "train_samples": len(train_entries),
+        "val_samples": len(val_entries),
+        "train_groups": group_count(train_entries),
+        "val_groups": group_count(val_entries),
+        "train_labels": label_counter(train_entries),
+        "val_labels": label_counter(val_entries),
+    }
 
 
 def expand_fixed_uusivc_data_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -223,6 +376,7 @@ def expand_fixed_uusivc_data_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     val_fraction = float(cfg.get("local_val_fraction", 0.1))
     seed = int(cfg.get("split_seed", cfg.get("seed", 2024)))
     max_samples = cfg.get("debug_max_samples_per_task", None)
+    split_mode = str(cfg.get("split_mode", "grouped_stratified"))
     generated = write_fixed_manifests(
         data_root,
         out_dir,
@@ -230,6 +384,7 @@ def expand_fixed_uusivc_data_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         local_val_fraction=val_fraction,
         seed=seed,
         max_samples_per_task=max_samples,
+        split_mode=split_mode,
     )
     expanded = dict(cfg)
     expanded.update(generated)

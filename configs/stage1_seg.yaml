@@ -80,6 +80,7 @@ model:
 data:
   local_val_fraction: 0.1
   split_seed: 2024
+  split_mode: grouped_stratified
   num_workers: 0
   num_frames: 10
 
