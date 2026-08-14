@@ -158,8 +158,10 @@ def derive_group_key(entry: Dict[str, Any]) -> str:
     - ``video_seg``: private ``X001.npy`` (no suffix) vs public CAMUS
       ``patient0001_2CH.npy`` -> strip the view label when present.
     - ``image_cls`` / ``image_seg``: multi-frame uses ``<label>_<case>_<frame>``
-      (two underscores -> strip the frame index); single-image uses
-      ``<label>_<case>`` (one underscore -> keep the whole stem as the case id).
+      (a short frame index, 1-2 digits -> strip it); single-image uses
+      ``<label>_<case>`` (keep the whole stem). A long zero-padded trailing
+      segment (e.g. Prostate ``seg_img_00000``) is a case index, NOT a frame,
+      so the whole stem is kept.
 
     ``data_partition_group`` (``private_train`` vs ``public_all``) is prepended so a
     private and a public sample that happen to share a name are never merged.
@@ -173,7 +175,11 @@ def derive_group_key(entry: Dict[str, Any]) -> str:
     if task in ("ceus_seg", "video_seg"):
         patient = stem.rsplit("_", 1)[0]  # strip trailing timestamp / view label
     elif task in ("image_cls", "image_seg"):
-        patient = stem.rsplit("_", 1)[0] if stem.count("_") >= 2 else stem
+        if stem.count("_") >= 2:
+            base, _, suffix = stem.rpartition("_")
+            patient = base if suffix.isdigit() and len(suffix) <= 2 else stem
+        else:
+            patient = stem
     else:  # ceus_cls
         patient = stem
 
