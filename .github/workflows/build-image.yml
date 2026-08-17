@@ -1,0 +1,26 @@
+name: Build UUSIVC2026 Docker Image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code (public repo)
+        uses: actions/checkout@v4
+        with:
+          ref: fix-nsd-interp-cls
+
+      - name: Checkout weights (private repo)
+        uses: actions/checkout@v4
+        with:
+          repository: Dawn596-ux/UUSIVC-2026-weights
+          token: ${{ secrets.WEIGHTS_PAT }}
+          lfs: true
+          path: weights
+
+      - name: Build image
+        run: |
+          docker build -t uusivc2026:baseline -f docker/Dockerfile .
+          docker images | grep -E 'uusivc2026|pytorch'
