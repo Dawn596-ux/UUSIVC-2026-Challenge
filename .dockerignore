@@ -1,0 +1,11 @@
+.git
+.idea
+__pycache__
+*.pyc
+*.log
+outputs/
+pretrained_ckpt/
+trainers/
+metrics_reference/
+README*
+docs*/
