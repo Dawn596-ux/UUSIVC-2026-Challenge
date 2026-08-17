@@ -60,24 +60,6 @@ def restore_ceus_prediction_to_original(pred_mask: np.ndarray, restore_meta: dic
     return full
 
 
-def restore_ceus_prob_to_original(prob: np.ndarray, restore_meta: dict) -> np.ndarray:
-    """Restore a CEUS foreground-probability map to the original frame with bilinear upsampling.
-
-    Mirrors `restore_ceus_prediction_to_original` but operates on a float foreground
-    probability map and bilinear-resizes (then thresholds at 0.5) instead of
-    NEAREST-resizing an already-binarized mask, keeping boundaries smooth for NSD.
-    """
-    shape = tuple(int(x) for x in restore_meta["shape"])
-    top, bottom, left, right = [int(x) for x in restore_meta["crop_box"]]
-    crop_h = max(bottom - top, 1)
-    crop_w = max(right - left, 1)
-    p = np.asarray(prob, dtype=np.float32)
-    resized = Image.fromarray(p).resize((crop_w, crop_h), Image.Resampling.BILINEAR)
-    full = np.zeros(shape, dtype=np.uint8)
-    full[top:bottom, left:right] = (np.asarray(resized) > 0.5).astype(np.uint8) * 255
-    return full
-
-
 @torch.no_grad()
 def compute_ceus_official_dice_from_logits(logits: torch.Tensor, raw_batch: dict) -> float:
     official_gt_masks = raw_batch.get("official_gt_mask")

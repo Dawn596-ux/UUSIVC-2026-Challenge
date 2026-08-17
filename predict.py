@@ -52,7 +52,7 @@ from datasets.uusivc2026_paths import (
 )
 from models.build_model import build_model
 from utils.checkpoint import resolve_checkpoint_reference
-from utils.metrics import restore_ceus_prob_to_original
+from utils.metrics import restore_ceus_prediction_to_original
 
 
 SEG_TASKS = {"image_seg", "ceus_seg", "video_seg"}
@@ -185,23 +185,6 @@ def resize_binary(mask: np.ndarray, hw: Tuple[int, int]) -> np.ndarray:
     return (np.asarray(resized) > 0).astype(np.uint8) * 255
 
 
-def resize_prob_bilinear(prob: torch.Tensor, hw: Tuple[int, int]) -> np.ndarray:
-    """Bilinear-resize a 2D foreground probability map to (h, w), then binarize at 0.5.
-
-    NEAREST upsampling of a low-res argmax mask produces jagged, staircase
-    boundaries that destroy NSD (30% of the seg score) while barely changing DSC.
-    Resizing the softmax foreground probability with bilinear interpolation keeps
-    boundaries smooth and sub-pixel accurate.
-    """
-    h, w = hw
-    p = prob.detach().float()
-    if p.ndim != 2:
-        raise ValueError(f"resize_prob_bilinear expects a 2D probability map, got {tuple(p.shape)}")
-    p = p.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-    resized = torch.nn.functional.interpolate(p, size=(h, w), mode="bilinear", align_corners=False)
-    return (resized[0, 0] > 0.5).cpu().numpy().astype(np.uint8) * 255
-
-
 def read_image(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"))
 
@@ -296,8 +279,8 @@ def predict_image_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     tensor, _ = BasicImageTransform((224, 224), binary_mask=False)(image, None)
     batch = make_seg_batch(tensor, entry["task"], BUS_IMAGE, TASK_DATASET_NAME["image_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
-    prob = torch.softmax(logits[0], dim=0)[1]  # foreground probability [H, W]
-    mask = resize_prob_bilinear(prob, image_hw(entry, phase_root))
+    pred = torch.argmax(logits[0], dim=0).detach().cpu().numpy()
+    mask = resize_binary(pred, image_hw(entry, phase_root))
     out_path = out_dir / output_rel(entry)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(mask).save(out_path)
@@ -311,7 +294,7 @@ def predict_video_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     tensor, _ = BasicVideoTransform((224, 224), binary_mask=True)(frames, None)
     batch = make_seg_batch(tensor, entry["task"], BUS_VIDEO, TASK_DATASET_NAME["video_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
-    prob = torch.softmax(logits[0], dim=1)[:, 1]  # foreground probability [T, H, W]
+    pred = torch.argmax(logits[0], dim=1).detach().cpu().numpy()
     frame_indices = [str(x) for x in (entry.get("frame_indices") or range(video.shape[0]))]
     masks = {}
     for key in frame_indices:
@@ -320,8 +303,8 @@ def predict_video_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
             nearest = int(round(frame_number * max(num_frames - 1, 0) / max(video.shape[0] - 1, 1)))
         except ValueError:
             nearest = len(masks) * max(num_frames - 1, 0) // max(len(frame_indices) - 1, 1)
-        nearest = max(0, min(prob.shape[0] - 1, nearest))
-        masks[key] = resize_prob_bilinear(prob[nearest], video_hw(entry, phase_root))
+        nearest = max(0, min(pred.shape[0] - 1, nearest))
+        masks[key] = resize_binary(pred[nearest], video_hw(entry, phase_root))
     out_path = out_dir / output_rel(entry)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, fnum_mask=masks)
@@ -340,9 +323,9 @@ def predict_ceus_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root: 
     batch = make_seg_batch(tensor, entry["task"], CEUS_VIDEO, TASK_DATASET_NAME["ceus_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
     frame_idx = int(logits.shape[1] // 2)
-    prob = torch.softmax(logits[0, frame_idx], dim=0)[1].detach().cpu().numpy()  # foreground prob [H, W]
+    pred = torch.argmax(logits[0, frame_idx], dim=0).detach().cpu().numpy()
     meta = processor._build_ceus_restore_meta(frames[0].shape, side)
-    mask = restore_ceus_prob_to_original(prob, meta)
+    mask = restore_ceus_prediction_to_original(pred, meta)
     out_path = out_dir / output_rel(entry)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, mask=mask)
