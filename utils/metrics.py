@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 from PIL import Image
+from scipy import ndimage as scipy_ndimage
 
 
 SEG_DSC_WEIGHT = 0.7
@@ -97,21 +98,21 @@ def _inner_boundary(mask: np.ndarray) -> np.ndarray:
     return center & (~eroded)
 
 
-def _dilate_cross(mask: np.ndarray) -> np.ndarray:
+def _dilate_disk(mask: np.ndarray, tau: int) -> np.ndarray:
+    """圆盘膨胀：把边界像素按欧氏距离 ≤ tau 膨胀（对齐官方 surface-dice 的边界带）。
+
+    distance_transform_edt 计算「前景(非零)像素到最近背景(零)像素」的距离；
+    传入 ~mask 后，边界是背景、其余是前景，得到「每个像素到最近边界像素」的距离。
+    τ=1 时退化为 4-连通十字膨胀（与旧 _dilate_cross 一致）。
+    """
     mask = (np.asarray(mask) > 0)
-    padded = np.pad(mask, 1, mode="constant", constant_values=False)
-    return (
-        padded[1:-1, 1:-1]
-        | padded[:-2, 1:-1]
-        | padded[2:, 1:-1]
-        | padded[1:-1, :-2]
-        | padded[1:-1, 2:]
-    )
+    if tau <= 0:
+        return mask
+    dist = scipy_ndimage.distance_transform_edt(~mask)
+    return dist <= tau
 
 
 def compute_nsd_np(pred: np.ndarray, target: np.ndarray, tolerance: int = 1) -> float:
-    if tolerance != 1:
-        raise ValueError("This lightweight NSD implementation expects tolerance=1.")
     target = (np.asarray(target) > 0).astype(np.uint8)
     pred = (np.asarray(pred) > 0).astype(np.uint8)
     if target.sum() == 0 and pred.sum() == 0:
@@ -124,37 +125,37 @@ def compute_nsd_np(pred: np.ndarray, target: np.ndarray, tolerance: int = 1) -> 
         return 1.0
     if boundary_true.sum() == 0 or boundary_pred.sum() == 0:
         return 0.0
-    true_match = (boundary_true & _dilate_cross(boundary_pred)).sum()
-    pred_match = (boundary_pred & _dilate_cross(boundary_true)).sum()
+    true_match = (boundary_true & _dilate_disk(boundary_pred, tolerance)).sum()
+    pred_match = (boundary_pred & _dilate_disk(boundary_true, tolerance)).sum()
     return float((true_match + pred_match) / (boundary_true.sum() + boundary_pred.sum()))
 
 
-def compute_binary_seg_score_np(pred: np.ndarray, target: np.ndarray) -> dict:
+def compute_binary_seg_score_np(pred: np.ndarray, target: np.ndarray, tolerance: int = 1) -> dict:
     dsc = compute_binary_dice_np(pred, target, eps=0.0)
-    nsd = compute_nsd_np(pred, target, tolerance=1)
+    nsd = compute_nsd_np(pred, target, tolerance=tolerance)
     return {"dsc": dsc, "nsd": nsd, "score": SEG_DSC_WEIGHT * dsc + SEG_NSD_WEIGHT * nsd}
 
 
 @torch.no_grad()
-def compute_binary_seg_score_from_logits(logits: torch.Tensor, target: torch.Tensor) -> dict:
+def compute_binary_seg_score_from_logits(logits: torch.Tensor, target: torch.Tensor, tolerance: int = 1) -> dict:
     if logits.ndim == 5:
         b, t, c, h, w = logits.shape
         logits = logits.reshape(b * t, c, h, w)
         target = target.reshape(b * t, h, w)
     pred = torch.argmax(logits, dim=1).detach().cpu().numpy()
     target_np = target.detach().cpu().numpy()
-    scores = [compute_binary_seg_score_np(p, y) for p, y in zip(pred, target_np)]
+    scores = [compute_binary_seg_score_np(p, y, tolerance=tolerance) for p, y in zip(pred, target_np)]
     if not scores:
         return {"dsc": 0.0, "nsd": 0.0, "score": 0.0}
     return {key: float(np.mean([item[key] for item in scores])) for key in ("dsc", "nsd", "score")}
 
 
 @torch.no_grad()
-def compute_ceus_official_score_from_logits(logits: torch.Tensor, raw_batch: dict) -> dict:
+def compute_ceus_official_score_from_logits(logits: torch.Tensor, raw_batch: dict, tolerance: int = 1) -> dict:
     official_gt_masks = raw_batch.get("official_gt_mask")
     restore_metas = raw_batch.get("ceus_restore_meta")
     if official_gt_masks is None or restore_metas is None:
-        return compute_binary_seg_score_from_logits(logits, raw_batch["label_seg"])
+        return compute_binary_seg_score_from_logits(logits, raw_batch["label_seg"], tolerance=tolerance)
 
     if logits.ndim == 5:
         frame_idx = int(logits.shape[1] // 2)
@@ -167,7 +168,7 @@ def compute_ceus_official_score_from_logits(logits: torch.Tensor, raw_batch: dic
     scores = []
     for idx, pred_mask in enumerate(pred):
         full_pred = restore_ceus_prediction_to_original(pred_mask, restore_metas[idx])
-        scores.append(compute_binary_seg_score_np(full_pred, official_gt_masks[idx]))
+        scores.append(compute_binary_seg_score_np(full_pred, official_gt_masks[idx], tolerance=tolerance))
     if not scores:
         return {"dsc": 0.0, "nsd": 0.0, "score": 0.0}
     return {key: float(np.mean([item[key] for item in scores])) for key in ("dsc", "nsd", "score")}

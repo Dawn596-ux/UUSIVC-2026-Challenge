@@ -52,6 +52,7 @@ class Stage1SegTrainer:
         best_epoch: int = -1,
         monitor_metric: str = "mean_score",
         keep_best: int = 3,
+        nsd_tolerance: int = 1,
         debug_cfg: Optional[Dict[str, Any]] = None,
     ):
         self.model = model.to(device)
@@ -79,6 +80,7 @@ class Stage1SegTrainer:
         self.best_epoch = best_epoch
         self.monitor_metric = monitor_metric
         self.keep_best = max(int(keep_best), 0)
+        self.nsd_tolerance = int(nsd_tolerance)
         self.best_records: List[Dict[str, Any]] = []
 
         # --- debug mode ---
@@ -266,10 +268,10 @@ class Stage1SegTrainer:
 
             logits = outputs["seg_logits"]
             if raw_batch.get("official_gt_mask") is not None:
-                score_dict = compute_ceus_official_score_from_logits(logits, raw_batch)
+                score_dict = compute_ceus_official_score_from_logits(logits, raw_batch, tolerance=self.nsd_tolerance)
             else:
                 target = batch["label_seg"]
-                score_dict = compute_binary_seg_score_from_logits(logits, target)
+                score_dict = compute_binary_seg_score_from_logits(logits, target, tolerance=self.nsd_tolerance)
             dsc_scores.append(score_dict["dsc"])
             nsd_scores.append(score_dict["nsd"])
             official_scores.append(score_dict["score"])
@@ -284,6 +286,7 @@ class Stage1SegTrainer:
         self.model.eval()
         all_metrics = {}
         mean_score_list = []
+        mean_dsc_list = []
 
         for loader_name, loader in val_loaders.items():
             metric = self.validate_one_loader(loader, loader_name)
@@ -291,8 +294,10 @@ class Stage1SegTrainer:
             all_metrics[f"{loader_name}_nsd"] = metric["nsd"]
             all_metrics[f"{loader_name}_score"] = metric["score"]
             mean_score_list.append(metric["score"])
+            mean_dsc_list.append(metric["dsc"])
 
         all_metrics["mean_score"] = sum(mean_score_list) / max(len(mean_score_list), 1)
+        all_metrics["mean_dsc"] = sum(mean_dsc_list) / max(len(mean_dsc_list), 1)
         return all_metrics
 
     def train_one_epoch(self, epoch: int, train_loaders: Dict[str, Any]) -> Dict[str, float]:

@@ -34,8 +34,11 @@ freeze:
 trainer:
   save_dir: ./outputs/stage1_seg
   log_interval: 20
-  monitor_metric: mean_score
+  monitor_metric: mean_dsc
   keep_best: 3
+
+metrics:
+  nsd_tolerance: 1
 
 optimizer:
   name: adamw

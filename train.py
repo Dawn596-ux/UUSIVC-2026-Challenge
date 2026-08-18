@@ -456,6 +456,7 @@ def main() -> None:
             best_epoch=resume_best_epoch,
             monitor_metric=cfg["trainer"].get("monitor_metric", "mean_score"),
             keep_best=cfg["trainer"].get("keep_best", 3),
+            nsd_tolerance=cfg.get("metrics", {}).get("nsd_tolerance", 1),
             debug_cfg=debug_cfg,
         )
     else:
