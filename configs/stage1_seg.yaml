@@ -10,7 +10,7 @@ sampling:
 train:
   seed: 2024
   deterministic: true
-  max_epochs: 50
+  max_epochs: 20
   use_amp: true
   init_checkpoint: null
   strict_load: true
@@ -42,7 +42,7 @@ metrics:
 
 optimizer:
   name: adamw
-  lr: 0.0001
+  lr: 0.00005
   weight_decay: 0.00001
 
 scheduler:
