@@ -11,6 +11,7 @@ from models.task_defs import (
     VIDEO_SEG,
 )
 from .dice import DiceLoss
+from .boundary_loss import BoundaryLoss
 
 
 class SegmentationLoss(nn.Module):
@@ -31,13 +32,16 @@ class SegmentationLoss(nn.Module):
         self,
         ce_weight: float = 0.4,
         dice_weight: float = 0.6,
+        boundary_weight: float = 0.0,
         ignore_index: int = -100,
     ):
         super().__init__()
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
+        self.boundary_weight = boundary_weight  # α，可被 trainer 按 epoch 递增
         self.ce_loss = nn.CrossEntropyLoss(ignore_index=ignore_index)
         self.dice_loss = DiceLoss()
+        self.boundary_loss = BoundaryLoss()
 
     def _flatten_video_if_needed(
         self,
@@ -80,11 +84,16 @@ class SegmentationLoss(nn.Module):
         loss_dice = self.dice_loss(logits, target, softmax=True)
         loss_total = self.ce_weight * loss_ce + self.dice_weight * loss_dice
 
-        return {
+        result = {
             "loss_total": loss_total,
             "loss_ce": loss_ce,
             "loss_dice": loss_dice,
         }
+        if self.boundary_weight > 0:
+            loss_boundary = self.boundary_loss(logits, target)
+            result["loss_boundary"] = loss_boundary
+            result["loss_total"] = loss_total + self.boundary_weight * loss_boundary
+        return result
 
 
 class Stage1SegLoss(nn.Module):
@@ -101,12 +110,14 @@ class Stage1SegLoss(nn.Module):
         self,
         ce_weight: float = 0.4,
         dice_weight: float = 0.6,
+        boundary_weight: float = 0.0,
         ignore_index: int = -100,
     ):
         super().__init__()
         self.seg_loss = SegmentationLoss(
             ce_weight=ce_weight,
             dice_weight=dice_weight,
+            boundary_weight=boundary_weight,
             ignore_index=ignore_index,
         )
 

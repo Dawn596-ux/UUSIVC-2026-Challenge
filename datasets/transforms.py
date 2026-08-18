@@ -81,15 +81,45 @@ def mask_to_tensor(mask: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(mask).long()
 
 
+def _add_speckle_noise(img: np.ndarray, **kwargs) -> np.ndarray:
+    """乘性高斯噪声，模拟超声斑点噪声（speckle）。
+
+    超声图像的噪声本质是乘性的（信号越强噪声越大），用均值 1、标准差 0.05
+    的高斯噪声逐像素相乘近似。
+    """
+    noise = np.random.normal(1.0, 0.05, img.shape).astype(np.float32)
+    return np.clip(img.astype(np.float32) * noise, 0, 255).astype(np.uint8)
+
+
+def build_augmentation():
+    """构建训练用 albumentations 增强管线（几何 + 强度 + 超声斑点噪声）。
+
+    惰性 import albumentations（本地不装该依赖，仅服务器训练环境需要）。
+    几何增强通过 albumentations 的 mask 同步机制保证 mask 与 image 一致变换。
+    """
+    import albumentations as A
+
+    return A.Compose([
+        A.HorizontalFlip(p=0.5),
+        A.ShiftScaleRotate(
+            shift_limit=0.0625, scale_limit=0.1, rotate_limit=15,
+            border_mode=0, value=0, mask_value=0, p=0.5,
+        ),
+        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+        A.RandomGamma(gamma_limit=(80, 120), p=0.5),
+        A.Lambda(image=_add_speckle_noise, p=0.5),
+    ])
+
+
 class BasicImageTransform:
-    def __init__(self, output_size=(224, 224), binary_mask: bool = True):
+    def __init__(self, output_size=(224, 224), binary_mask: bool = True, augmentation=None):
         self.output_size = output_size
         self.binary_mask = binary_mask
+        self.augmentation = augmentation
 
     def __call__(self, image: np.ndarray, mask: Optional[np.ndarray] = None):
         image = ensure_3ch(image)
         image = resize_image(image, self.output_size)
-        image = normalize_to_float(image)
 
         if mask is not None:
             if self.binary_mask:
@@ -97,6 +127,16 @@ class BasicImageTransform:
             else:
                 mask = mask.astype(np.uint8)
             mask = resize_mask(mask, self.output_size)
+
+        if self.augmentation is not None:
+            if mask is not None:
+                aug = self.augmentation(image=image, mask=mask)
+                image, mask = aug["image"], aug["mask"]
+            else:
+                aug = self.augmentation(image=image)
+                image = aug["image"]
+
+        image = normalize_to_float(image)
 
         image_tensor = image_to_tensor(image)
 
@@ -108,9 +148,9 @@ class BasicImageTransform:
 
 
 class BasicVideoTransform:
-    def __init__(self, output_size=(224, 224), binary_mask: bool = True):
+    def __init__(self, output_size=(224, 224), binary_mask: bool = True, augmentation=None):
         self.output_size = output_size
-        self.image_tf = BasicImageTransform(output_size, binary_mask=binary_mask)
+        self.image_tf = BasicImageTransform(output_size, binary_mask=binary_mask, augmentation=augmentation)
 
     def __call__(self, frames, masks=None):
         """

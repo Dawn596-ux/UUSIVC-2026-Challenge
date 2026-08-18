@@ -52,6 +52,9 @@ scheduler:
 loss:
   ce_weight: 0.4
   dice_weight: 0.6
+  boundary_weight: 0.01
+  boundary_weight_step: 0.01
+  boundary_weight_max: 1.0
 
 model:
   in_channels: 3
@@ -86,6 +89,7 @@ data:
   split_mode: grouped_stratified
   num_workers: 0
   num_frames: 10
+  augmentation: true
 
   batch_size_image_seg: 4
   batch_size_video_seg: 1

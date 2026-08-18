@@ -457,6 +457,9 @@ def main() -> None:
             monitor_metric=cfg["trainer"].get("monitor_metric", "mean_score"),
             keep_best=cfg["trainer"].get("keep_best", 3),
             nsd_tolerance=cfg.get("metrics", {}).get("nsd_tolerance", 1),
+            boundary_weight=cfg.get("loss", {}).get("boundary_weight", 0.0),
+            boundary_weight_step=cfg.get("loss", {}).get("boundary_weight_step", 0.0),
+            boundary_weight_max=cfg.get("loss", {}).get("boundary_weight_max", 0.0),
             debug_cfg=debug_cfg,
         )
     else:

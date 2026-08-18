@@ -53,6 +53,9 @@ class Stage1SegTrainer:
         monitor_metric: str = "mean_score",
         keep_best: int = 3,
         nsd_tolerance: int = 1,
+        boundary_weight: float = 0.0,
+        boundary_weight_step: float = 0.0,
+        boundary_weight_max: float = 0.0,
         debug_cfg: Optional[Dict[str, Any]] = None,
     ):
         self.model = model.to(device)
@@ -73,6 +76,7 @@ class Stage1SegTrainer:
         self.criterion = Stage1SegLoss(
             ce_weight=ce_weight,
             dice_weight=dice_weight,
+            boundary_weight=boundary_weight,
         )
 
         self.scaler = make_grad_scaler(enabled=use_amp)
@@ -81,6 +85,9 @@ class Stage1SegTrainer:
         self.monitor_metric = monitor_metric
         self.keep_best = max(int(keep_best), 0)
         self.nsd_tolerance = int(nsd_tolerance)
+        self.boundary_weight = boundary_weight
+        self.boundary_weight_step = boundary_weight_step
+        self.boundary_weight_max = boundary_weight_max
         self.best_records: List[Dict[str, Any]] = []
 
         # --- debug mode ---
@@ -413,6 +420,13 @@ class Stage1SegTrainer:
         self.logger.info(f"Task sampling ratio: {self.task_sampling_ratio}")
 
         for epoch in range(self.start_epoch, self.max_epochs + 1):
+            # Boundary Loss α schedule：从 boundary_weight 起，每 epoch 递增 step，上限 max
+            if self.boundary_weight_step > 0:
+                alpha = min(
+                    self.boundary_weight + self.boundary_weight_step * (epoch - self.start_epoch),
+                    self.boundary_weight_max,
+                )
+                self.criterion.seg_loss.boundary_weight = alpha
             start_time = time.time()
             train_log = self.train_one_epoch(epoch, train_loaders)
 
