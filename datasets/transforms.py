@@ -84,10 +84,10 @@ def mask_to_tensor(mask: np.ndarray) -> torch.Tensor:
 def _add_speckle_noise(img: np.ndarray, **kwargs) -> np.ndarray:
     """乘性高斯噪声，模拟超声斑点噪声（speckle）。
 
-    超声图像的噪声本质是乘性的（信号越强噪声越大），用均值 1、标准差 0.05
-    的高斯噪声逐像素相乘近似。
+    超声图像的噪声本质是乘性的（信号越强噪声越大），用均值 1、标准差 0.03
+    的高斯噪声逐像素相乘近似（较轻，避免破坏精细分割边界）。
     """
-    noise = np.random.normal(1.0, 0.05, img.shape).astype(np.float32)
+    noise = np.random.normal(1.0, 0.03, img.shape).astype(np.float32)
     return np.clip(img.astype(np.float32) * noise, 0, 255).astype(np.uint8)
 
 
@@ -96,18 +96,20 @@ def build_augmentation():
 
     惰性 import albumentations（本地不装该依赖，仅服务器训练环境需要）。
     几何增强通过 albumentations 的 mask 同步机制保证 mask 与 image 一致变换。
+
+    参数经调优（第二轮）：减弱几何/强度扰动幅度，避免 DSC 下降而抵消 NSD 收益。
     """
     import albumentations as A
 
     return A.Compose([
         A.HorizontalFlip(p=0.5),
         A.ShiftScaleRotate(
-            shift_limit=0.0625, scale_limit=0.1, rotate_limit=15,
+            shift_limit=0.03125, scale_limit=0.05, rotate_limit=8,
             border_mode=0, value=0, mask_value=0, p=0.5,
         ),
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        A.RandomGamma(gamma_limit=(80, 120), p=0.5),
-        A.Lambda(image=_add_speckle_noise, p=0.5),
+        A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
+        A.RandomGamma(gamma_limit=(90, 110), p=0.5),
+        A.Lambda(image=_add_speckle_noise, p=0.3),
     ])
 
 

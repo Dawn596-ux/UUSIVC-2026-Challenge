@@ -14,7 +14,8 @@ from scipy.ndimage import distance_transform_edt
 def _compute_sdf(mask: torch.Tensor) -> torch.Tensor:
     """从二值 mask 计算符号距离函数（SDF），前景内部为负、外部为正、边界为 0。
 
-    mask: [B, H, W]（0/1）。返回同 shape、同 device 的 float SDF。
+    mask: [B, H, W]（0/1）。返回同 shape、同 device 的 float SDF，归一化到 [-1, 1]
+    以稳定 Boundary Loss（避免像素距离几百的尺度导致 train_loss 失控）。
     """
     mask_np = (mask > 0).detach().cpu().numpy().astype(bool)
     b = mask_np.shape[0]
@@ -22,9 +23,13 @@ def _compute_sdf(mask: torch.Tensor) -> torch.Tensor:
     for i in range(b):
         pos = mask_np[i]
         if pos.any():
-            sdf[i] = (distance_transform_edt(~pos) - distance_transform_edt(pos)).astype(np.float32)
+            pos_dist = distance_transform_edt(pos)
+            neg_dist = distance_transform_edt(~pos)
+            raw = neg_dist - pos_dist
+            max_d = max(float(pos_dist.max()), float(neg_dist.max()), 1e-6)
+            sdf[i] = (raw / max_d).astype(np.float32)
         else:
-            sdf[i] = 1e10
+            sdf[i] = 1.0
     return torch.from_numpy(sdf).to(mask.device)
 
 

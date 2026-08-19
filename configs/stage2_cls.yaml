@@ -9,9 +9,9 @@ sampling:
 train:
   seed: 2024
   deterministic: true
-  max_epochs: 80
+  max_epochs: 40
   use_amp: true
-  init_checkpoint: ./outputs/stage1_seg
+  init_checkpoint: ./outputs/stage1_seg_aug2
   strict_load: true
   require_validation: true
 
@@ -31,7 +31,7 @@ freeze:
       - video_model.temporal_router.simple_video_seg_head
 
 trainer:
-  save_dir: ./outputs/stage2_cls
+  save_dir: ./outputs/stage2_cls_aug2
   log_interval: 20
   monitor_metric: mean_score
   keep_best: 3
