@@ -377,6 +377,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--phase", choices=["val", "test"], default="val", help="Submission phase to generate. Public releases provide val; test is for platform/internal use.")
     parser.add_argument("--config", type=str, default="configs/stage2_cls.yaml", help="Model config path. Defaults to the final Stage-2 config.")
     parser.add_argument("--checkpoint", type=str, default=None, help="Full-model checkpoint path or directory. If omitted, the best Stage-2 checkpoint is used.")
+    parser.add_argument("--secondary-checkpoint", type=str, default=None, help="Optional second full-model checkpoint used for video_seg and image_cls (mixed-checkpoint repair).")
     parser.add_argument("--which", choices=["best", "latest"], default="best", help="Checkpoint choice when --checkpoint is not provided.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto", help="Inference device.")
     parser.add_argument("--output-dir", type=str, default=None, help="Output submission directory.")
@@ -418,27 +419,39 @@ def main() -> None:
     print(f"[Info] Checkpoint: {checkpoint_path}")
 
     model = load_model(cfg, checkpoint_path, device)
+    secondary_model = None
+    if args.secondary_checkpoint:
+        secondary_path = resolve_checkpoint_reference(args.secondary_checkpoint, prefix=None)
+        secondary_model = load_model(cfg, secondary_path, device)
+        print(f"[Info] Secondary Checkpoint: {secondary_path}")
+
     ceus_processor = build_ceus_processor(cfg.get("data", {}))
     num_frames = int(cfg.get("data", {}).get("num_frames", 10))
+
+    # 混合 checkpoint：video_seg / image_cls 用 secondary（旧 encoder 未漂移），其余用主 checkpoint
+    def _model_for(task: str):
+        if secondary_model is not None and task in {"video_seg", "image_cls"}:
+            return secondary_model
+        return model
 
     classification: Dict[str, Dict[str, Any]] = {}
     counts = {"classification": 0, "segmentation": 0}
     for entry in tqdm(entries, desc="Predict"):
         task = entry.get("task")
         if task == "image_seg":
-            predict_image_seg(model, entry, phase_root, out_dir, device)
+            predict_image_seg(_model_for(task), entry, phase_root, out_dir, device)
             counts["segmentation"] += 1
         elif task == "video_seg":
-            predict_video_seg(model, entry, phase_root, out_dir, device, num_frames)
+            predict_video_seg(_model_for(task), entry, phase_root, out_dir, device, num_frames)
             counts["segmentation"] += 1
         elif task == "ceus_seg":
-            predict_ceus_seg(model, entry, phase_root, out_dir, device, ceus_processor)
+            predict_ceus_seg(_model_for(task), entry, phase_root, out_dir, device, ceus_processor)
             counts["segmentation"] += 1
         elif task == "image_cls":
-            classification[classification_key(entry)] = predict_image_cls(model, entry, phase_root, device)
+            classification[classification_key(entry)] = predict_image_cls(_model_for(task), entry, phase_root, device)
             counts["classification"] += 1
         elif task == "ceus_cls":
-            classification[classification_key(entry)] = predict_ceus_cls(model, entry, phase_root, device, num_frames)
+            classification[classification_key(entry)] = predict_ceus_cls(_model_for(task), entry, phase_root, device, num_frames)
             counts["classification"] += 1
 
     write_json(out_dir / "classification.json", classification)
