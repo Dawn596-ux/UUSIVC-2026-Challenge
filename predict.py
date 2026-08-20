@@ -306,9 +306,7 @@ def predict_video_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     tensor, _ = BasicVideoTransform((224, 224), binary_mask=True)(frames, None)
     batch = make_seg_batch(tensor, entry["task"], BUS_VIDEO, TASK_DATASET_NAME["video_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
-    logits_flip = model(_flip_batch_image(batch))["seg_logits"]
-    prob = torch.softmax(logits[0], dim=1) + torch.softmax(logits_flip[0], dim=1).flip(-1)
-    pred = torch.argmax(prob, dim=1).detach().cpu().numpy()
+    pred = torch.argmax(logits[0], dim=1).detach().cpu().numpy()
     frame_indices = [str(x) for x in (entry.get("frame_indices") or range(video.shape[0]))]
     masks = {}
     for key in frame_indices:
@@ -336,10 +334,8 @@ def predict_ceus_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root: 
     tensor, _ = processor.transform(fused_frames, None)
     batch = make_seg_batch(tensor, entry["task"], CEUS_VIDEO, TASK_DATASET_NAME["ceus_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
-    logits_flip = model(_flip_batch_image(batch))["seg_logits"]
     frame_idx = int(logits.shape[1] // 2)
-    prob = torch.softmax(logits[0, frame_idx], dim=0) + torch.softmax(logits_flip[0, frame_idx], dim=0).flip(-1)
-    pred = torch.argmax(prob, dim=0).detach().cpu().numpy()
+    pred = torch.argmax(logits[0, frame_idx], dim=0).detach().cpu().numpy()
     meta = processor._build_ceus_restore_meta(frames[0].shape, side)
     mask = restore_ceus_prediction_to_original(pred, meta)
     out_path = out_dir / output_rel(entry)
@@ -353,9 +349,7 @@ def predict_image_cls(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     image = read_image(path)
     tensor, _ = BasicImageTransform((224, 224), binary_mask=True)(image, None)
     batch = make_cls_batch(tensor, entry["task"], BUS_IMAGE, TASK_DATASET_NAME["image_cls"], path.stem, device)
-    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0]
-    probs_flip = torch.softmax(model(_flip_batch_image(batch))["cls_logits"], dim=1)[0]
-    probs = ((probs + probs_flip) / 2).detach().cpu().numpy()
+    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0].detach().cpu().numpy()
     n = class_count(entry)
     probs = probs[:n]
     probs = probs / max(float(probs.sum()), 1e-12)
@@ -369,9 +363,7 @@ def predict_ceus_cls(model: torch.nn.Module, entry: Dict[str, Any], phase_root: 
     frames = sampled_frames(video, num_frames)
     tensor, _ = BasicVideoTransform((224, 224), binary_mask=True)(frames, None)
     batch = make_cls_batch(tensor, entry["task"], CEUS_VIDEO, TASK_DATASET_NAME["ceus_cls"], path.stem, device)
-    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0]
-    probs_flip = torch.softmax(model(_flip_batch_image(batch))["cls_logits"], dim=1)[0]
-    probs = ((probs + probs_flip) / 2).detach().cpu().numpy()
+    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0].detach().cpu().numpy()
     n = class_count(entry)
     probs = probs[:n]
     probs = probs / max(float(probs.sum()), 1e-12)
