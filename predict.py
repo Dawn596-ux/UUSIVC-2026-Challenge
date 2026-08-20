@@ -185,6 +185,16 @@ def resize_binary(mask: np.ndarray, hw: Tuple[int, int]) -> np.ndarray:
     return (np.asarray(resized) > 0).astype(np.uint8) * 255
 
 
+def _flip_batch_image(batch: Dict[str, Any]) -> Dict[str, Any]:
+    """返回水平翻转 image 的 batch 副本（用于 TTA）。
+
+    超声图像左右对称，水平翻转（W 维，dim=-1）是安全的几何不变性。
+    """
+    flipped = dict(batch)
+    flipped[IMAGE] = torch.flip(batch[IMAGE], dims=[-1])
+    return flipped
+
+
 def read_image(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"))
 
@@ -279,7 +289,9 @@ def predict_image_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     tensor, _ = BasicImageTransform((224, 224), binary_mask=False)(image, None)
     batch = make_seg_batch(tensor, entry["task"], BUS_IMAGE, TASK_DATASET_NAME["image_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
-    pred = torch.argmax(logits[0], dim=0).detach().cpu().numpy()
+    logits_flip = model(_flip_batch_image(batch))["seg_logits"]
+    prob = torch.softmax(logits[0], dim=0) + torch.softmax(logits_flip[0], dim=0).flip(-1)
+    pred = torch.argmax(prob, dim=0).detach().cpu().numpy()
     mask = resize_binary(pred, image_hw(entry, phase_root))
     out_path = out_dir / output_rel(entry)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -294,7 +306,9 @@ def predict_video_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     tensor, _ = BasicVideoTransform((224, 224), binary_mask=True)(frames, None)
     batch = make_seg_batch(tensor, entry["task"], BUS_VIDEO, TASK_DATASET_NAME["video_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
-    pred = torch.argmax(logits[0], dim=1).detach().cpu().numpy()
+    logits_flip = model(_flip_batch_image(batch))["seg_logits"]
+    prob = torch.softmax(logits[0], dim=1) + torch.softmax(logits_flip[0], dim=1).flip(-1)
+    pred = torch.argmax(prob, dim=1).detach().cpu().numpy()
     frame_indices = [str(x) for x in (entry.get("frame_indices") or range(video.shape[0]))]
     masks = {}
     for key in frame_indices:
@@ -322,8 +336,10 @@ def predict_ceus_seg(model: torch.nn.Module, entry: Dict[str, Any], phase_root: 
     tensor, _ = processor.transform(fused_frames, None)
     batch = make_seg_batch(tensor, entry["task"], CEUS_VIDEO, TASK_DATASET_NAME["ceus_seg"], path.stem, device)
     logits = model(batch)["seg_logits"]
+    logits_flip = model(_flip_batch_image(batch))["seg_logits"]
     frame_idx = int(logits.shape[1] // 2)
-    pred = torch.argmax(logits[0, frame_idx], dim=0).detach().cpu().numpy()
+    prob = torch.softmax(logits[0, frame_idx], dim=0) + torch.softmax(logits_flip[0, frame_idx], dim=0).flip(-1)
+    pred = torch.argmax(prob, dim=0).detach().cpu().numpy()
     meta = processor._build_ceus_restore_meta(frames[0].shape, side)
     mask = restore_ceus_prediction_to_original(pred, meta)
     out_path = out_dir / output_rel(entry)
@@ -337,7 +353,9 @@ def predict_image_cls(model: torch.nn.Module, entry: Dict[str, Any], phase_root:
     image = read_image(path)
     tensor, _ = BasicImageTransform((224, 224), binary_mask=True)(image, None)
     batch = make_cls_batch(tensor, entry["task"], BUS_IMAGE, TASK_DATASET_NAME["image_cls"], path.stem, device)
-    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0].detach().cpu().numpy()
+    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0]
+    probs_flip = torch.softmax(model(_flip_batch_image(batch))["cls_logits"], dim=1)[0]
+    probs = ((probs + probs_flip) / 2).detach().cpu().numpy()
     n = class_count(entry)
     probs = probs[:n]
     probs = probs / max(float(probs.sum()), 1e-12)
@@ -351,7 +369,9 @@ def predict_ceus_cls(model: torch.nn.Module, entry: Dict[str, Any], phase_root: 
     frames = sampled_frames(video, num_frames)
     tensor, _ = BasicVideoTransform((224, 224), binary_mask=True)(frames, None)
     batch = make_cls_batch(tensor, entry["task"], CEUS_VIDEO, TASK_DATASET_NAME["ceus_cls"], path.stem, device)
-    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0].detach().cpu().numpy()
+    probs = torch.softmax(model(batch)["cls_logits"], dim=1)[0]
+    probs_flip = torch.softmax(model(_flip_batch_image(batch))["cls_logits"], dim=1)[0]
+    probs = ((probs + probs_flip) / 2).detach().cpu().numpy()
     n = class_count(entry)
     probs = probs[:n]
     probs = probs / max(float(probs.sum()), 1e-12)
