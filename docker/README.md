@@ -8,7 +8,7 @@ This guide explains how to build and run the inference for UUSIVC 2026 in a Dock
 - Baseline source project: `UUSIVC-2026-Challenge`
 - Loadable baseline Docker image: `uusivc2026-baseline-docker.tar`
 
-[HERE](https://huggingface.co/datasets/WyattH/UUSIVC2026/tree/main)
+[Reference HERE](https://huggingface.co/datasets/WyattH/UUSIVC2026/tree/main)
 
 ## 2. Install Docker
 
