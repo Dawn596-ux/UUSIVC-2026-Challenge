@@ -2,12 +2,12 @@
 
 This guide explains how to build and run the inference for UUSIVC 2026 in a Docker environment with GPU support.
 
-## 1. Reference Examples
+## 1. [Reference Examples](https://github.com/uusic2025/challenge/tree/main/docker#3-tag-your-image)
 
 - Baseline source project: `UUSIVC-2026-Challenge`
 - Loadable baseline Docker image: `uusivc2026-baseline-docker.tar`
 
-[here](https://huggingface.co/datasets/WyattH/UUSIVC2026/tree/main)
+[HERE](https://huggingface.co/datasets/WyattH/UUSIVC2026/tree/main)
 
 ## 2. Install Docker
 
