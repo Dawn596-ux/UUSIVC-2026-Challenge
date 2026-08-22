@@ -170,3 +170,35 @@ def resolve_checkpoint_reference(checkpoint_ref, prefix: Optional[str] = None) -
         return str(candidates[0].resolve())
 
     raise FileNotFoundError(f"Checkpoint not found: {checkpoint_ref}")
+
+
+def load_swin_branch_checkpoint(dual_encoder, checkpoint_path, map_location=None):
+    """Load the Swin encoder branch from a full Swin-only model checkpoint into a
+    DualEncoder, remapping ``image_model.backbone.encoder.backbone.*`` -> ``swin.backbone.*``.
+
+    Used to initialize the (frozen) Swin branch of the DINOv2 fusion model with the
+    domain-adapted weights from the 0.6505 Swin baseline, instead of ImageNet-only.
+    """
+    old_prefix = "image_model.backbone.encoder.backbone."
+    new_prefix = "swin.backbone."
+
+    resolved_path = Path(resolve_checkpoint_reference(checkpoint_path)).expanduser().resolve()
+    checkpoint = torch.load(str(resolved_path), map_location=map_location)
+    state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+
+    remapped = {}
+    skipped = 0
+    for key, value in state_dict.items():
+        if key.startswith(old_prefix):
+            remapped[new_prefix + key[len(old_prefix):]] = value
+        else:
+            skipped += 1
+
+    incompatible = dual_encoder.load_state_dict(remapped, strict=False)
+    return {
+        "path": str(resolved_path),
+        "loaded": len(remapped),
+        "skipped": skipped,
+        "missing_keys": list(getattr(incompatible, "missing_keys", [])),
+        "unexpected_keys": list(getattr(incompatible, "unexpected_keys", [])),
+    }

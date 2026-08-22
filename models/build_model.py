@@ -5,6 +5,8 @@ from typing import Any, Dict
 import torch
 import yaml
 
+from models.backbones.dinov2_encoder import DinoV2Encoder
+from models.backbones.dual_encoder import DualEncoder
 from models.backbones.swin_tiny_encoder import SwinTinyEncoder
 from models.backbones.swin_unet_backbone import SwinUNetBackbone
 from models.framework.image_model import ImageTaskModel
@@ -26,6 +28,7 @@ from models.task_defs import (
     VIDEO_SEG,
 )
 from models.video.temporal_router import TemporalRouter
+from utils.checkpoint import load_swin_branch_checkpoint
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
@@ -37,12 +40,31 @@ def build_model(cfg: Dict[str, Any]) -> UnifiedModel:
     model_cfg = cfg["model"]
     backbone_cfg = model_cfg.get("backbone", {})
 
-    encoder = SwinTinyEncoder(
-        img_size=backbone_cfg.get("img_size", cfg.get("debug", {}).get("image_size", 224)),
-        in_channels=model_cfg["in_channels"],
-        pretrained=backbone_cfg.get("pretrained", False),
-        pretrained_checkpoint=backbone_cfg.get("pretrained_checkpoint", None),
-    )
+    img_size = backbone_cfg.get("img_size", cfg.get("debug", {}).get("image_size", 224))
+
+    if backbone_cfg.get("name", "swin_tiny") == "dual_dinov2":
+        swin_encoder = SwinTinyEncoder(
+            img_size=img_size,
+            in_channels=model_cfg["in_channels"],
+            pretrained=backbone_cfg.get("pretrained", False),
+            pretrained_checkpoint=backbone_cfg.get("pretrained_checkpoint", None),
+        )
+        dino_encoder = DinoV2Encoder(
+            variant=backbone_cfg.get("dinov2_variant", "vit_small_patch14_dinov2.lvd142m"),
+            img_size=img_size,
+            in_channels=model_cfg["in_channels"],
+            pretrained=backbone_cfg.get("dinov2_pretrained", True),
+        )
+        encoder = DualEncoder(swin=swin_encoder, dino=dino_encoder)
+        if backbone_cfg.get("swin_branch_checkpoint"):
+            load_swin_branch_checkpoint(encoder, backbone_cfg["swin_branch_checkpoint"])
+    else:
+        encoder = SwinTinyEncoder(
+            img_size=img_size,
+            in_channels=model_cfg["in_channels"],
+            pretrained=backbone_cfg.get("pretrained", False),
+            pretrained_checkpoint=backbone_cfg.get("pretrained_checkpoint", None),
+        )
 
     backbone = SwinUNetBackbone(
         encoder=encoder,

@@ -1,0 +1,110 @@
+run:
+  stage: stage1_seg
+
+sampling:
+  stage1_seg_ratio:
+    image_seg: 3
+    cardiac_video_seg: 2
+    video_seg_ceus: 4
+
+train:
+  seed: 2024
+  deterministic: true
+  max_epochs: 20
+  use_amp: true
+  init_checkpoint: null
+  strict_load: true
+  require_validation: true
+
+freeze:
+  stage1_seg:
+    freeze_keywords:
+      - image_model.backbone.encoder.swin
+      - image_model.backbone.cls_proj
+      - image_model.backbone.cls_skip_projs
+      - image_model.backbone.cls_multiscale_fuse
+      - image_model.cls_head
+      - video_model.temporal_router.video_cls_head
+    frozen_eval_keywords:
+      - image_model.backbone.encoder.swin
+      - image_model.backbone.cls_proj
+      - image_model.backbone.cls_skip_projs
+      - image_model.backbone.cls_multiscale_fuse
+      - image_model.cls_head
+      - video_model.temporal_router.video_cls_head
+
+trainer:
+  save_dir: ./outputs/stage1_seg_dinov2
+  log_interval: 20
+  monitor_metric: mean_dsc
+  keep_best: 3
+
+metrics:
+  nsd_tolerance: 1
+
+optimizer:
+  name: adamw
+  lr: 0.00005
+  weight_decay: 0.00001
+
+scheduler:
+  name: cosine
+  eta_min: 0.000001
+
+loss:
+  ce_weight: 0.4
+  dice_weight: 0.6
+  boundary_weight: 0.01
+  boundary_weight_step: 0.01
+  boundary_weight_max: 1.0
+
+model:
+  in_channels: 3
+  seg_feature_channels: 96
+  cls_feature_channels: 192
+  num_seg_classes: 2
+  num_cls_classes: 2
+  seg_head_mid_channels: 128
+  seg_dropout: 0.1
+  seg_upsample_scale: 4
+  cls_hidden_channels: 384
+  cls_dropout: 0.2
+  cls_head_mode: perceptguide
+  cls_mlp_layers: 2
+  temporal_cls_mode: perceptguide
+  temporal_transformer_layers: 1
+  temporal_transformer_heads: 4
+  neighbor_kernel_size: 3
+  use_memory_seg: false
+  video_seg_mode: simple
+  video_cls_mode: perceptguide
+  backbone:
+    name: dual_dinov2
+    img_size: 224
+    pretrained: false
+    pretrained_checkpoint: ./pretrained_ckpt/swin_tiny_patch4_window7_224.pth
+    dinov2_variant: vit_small_patch14_dinov2.lvd142m
+    dinov2_pretrained: true
+    swin_branch_checkpoint: ./outputs/stage1_seg_aug2
+  use_prompt: false
+
+data:
+  local_val_fraction: 0.1
+  split_seed: 2024
+  split_mode: grouped_stratified
+  num_workers: 0
+  num_frames: 10
+  augmentation: true
+
+  batch_size_image_seg: 4
+  batch_size_video_seg: 1
+  batch_size_image_cls: 16
+  batch_size_video_cls: 4
+
+  use_balanced_sampler_image_cls: false
+  use_balanced_sampler_video_cls: false
+
+  ceus_dualview_fusion: true
+  ceus_fusion_mode: baseline_difference
+  ceus_gt_side_mode: auto
+  ceus_baseline_frames: 5

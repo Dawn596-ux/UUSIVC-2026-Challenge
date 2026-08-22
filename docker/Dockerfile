@@ -7,7 +7,7 @@ LABEL maintainer="Dawn596-ux" \
 
 # numpy 必须 <2（血泪教训：numpy 2.x 的 pickle 格式评分机读不了，直接零分）
 RUN pip install --no-cache-dir "numpy<2" && \
-    pip install --no-cache-dir pyyaml tqdm pillow matplotlib scikit-learn scipy scikit-image
+    pip install --no-cache-dir pyyaml tqdm pillow matplotlib scikit-learn scipy scikit-image timm
 
 WORKDIR /app
 
