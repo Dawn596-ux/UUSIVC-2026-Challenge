@@ -47,7 +47,15 @@ class DinoV2Encoder(nn.Module):
         self.num_patches = (img_size // self._PATCH_SIZE) ** 2  # 256 at 224
 
         # num_classes=0 -> no classifier head; forward_features returns patch tokens
-        self.backbone = timm.create_model(variant, pretrained=pretrained, num_classes=0)
+        # img_size + dynamic_img_size: DINOv2 lvd142m defaults to 518, but we run at 224
+        # (dynamic interpolates the position embeddings to the actual input resolution).
+        self.backbone = timm.create_model(
+            variant,
+            pretrained=pretrained,
+            num_classes=0,
+            img_size=img_size,
+            dynamic_img_size=True,
+        )
         self.dim = self.backbone.embed_dim
 
         self.stage_channels = list(self._TARGET_CHANNELS)
