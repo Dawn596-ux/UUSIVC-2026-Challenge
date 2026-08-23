@@ -10,11 +10,12 @@ DEVICE="${DEVICE:-cuda}"
 
 mkdir -p "$OUTPUT_DIR"
 
-# 显式 --checkpoint 指向 rank2（勿用 --which best 默认，会解析到坏 rank1）
+# 双 checkpoint：主 aug2 rank1（task1/2/5）+ 辅 stage2_cls rank2（task3/4 混合修复）
 python -B /app/predict.py \
   --data-root "$INPUT_DIR" \
   --phase test \
   --checkpoint /app/checkpoint.pth \
+  --secondary-checkpoint /app/secondary_checkpoint.pth \
   --output-dir "$OUTPUT_DIR" \
   --device "$DEVICE" \
   --no-zip

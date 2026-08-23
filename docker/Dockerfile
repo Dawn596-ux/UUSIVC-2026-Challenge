@@ -5,9 +5,11 @@ FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 LABEL maintainer="Dawn596-ux" \
       description="UUSIVC 2026 testing-phase inference image"
 
-# numpy 必须 <2（血泪教训：numpy 2.x 的 pickle 格式评分机读不了，直接零分）
-RUN pip install --no-cache-dir "numpy<2" && \
-    pip install --no-cache-dir pyyaml tqdm pillow matplotlib scikit-learn scipy scikit-image
+# 依赖：albumentations 先装（会连带升 numpy/scipy 到 2.x），再分步锁回（阶段 B 验证顺序）
+RUN pip install --no-cache-dir albumentations==2.0.8 && \
+    pip install --no-cache-dir "numpy<2" && \
+    pip install --no-cache-dir "scipy<1.14" && \
+    pip install --no-cache-dir pyyaml tqdm pillow matplotlib scikit-learn scikit-image
 
 WORKDIR /app
 
@@ -18,8 +20,9 @@ COPY models/ /app/models/
 COPY datasets/ /app/datasets/
 COPY utils/ /app/utils/
 
-# 权重（rank2 是基线 0.6351 用的完整 checkpoint；rank1 已被 8/10 坏重启覆盖，勿用）
-COPY weights/best_stage2_cls_rank2.pth /app/checkpoint.pth
+# 权重：双 checkpoint（主 stage2_cls_aug2 rank1 用于 task1/2/5；辅 stage2_cls rank2 用于 task3/4）
+COPY weights/best_stage2_cls_aug2_rank1.pth /app/checkpoint.pth
+COPY weights/best_stage2_cls_rank2.pth /app/secondary_checkpoint.pth
 COPY weights/swin_tiny_patch4_window7_224.pth /app/pretrained_ckpt/swin_tiny_patch4_window7_224.pth
 
 # 入口脚本
