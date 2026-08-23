@@ -1,4 +1,29 @@
-".idea/workspace.xml" 
-".idea/workspace.xml" 
-pretrained_ckpt/*.pth 
-.idea/workspace.xml 
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc.*
+
+# 虚拟环境
+.venv/
+venv/
+
+# 训练产物 / 输出
+outputs/
+*.zip
+*.npz
+*.npy
+
+# 预训练权重（在私有权重仓库，不进 git）
+pretrained_ckpt/*.pth
+
+# IDE
+.idea/
+.vscode/
+
+# 日志
+*.log
+
+# 已放弃的实验脚本（DINOv2）
+run_dinov2_pipeline.sh
