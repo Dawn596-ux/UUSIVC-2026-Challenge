@@ -10,7 +10,7 @@ jobs:
       - name: Checkout code (public repo)
         uses: actions/checkout@v4
         with:
-          ref: fix-nsd-interp-cls
+          ref: baseline-0.6505
 
       - name: Checkout weights (private repo)
         uses: actions/checkout@v4
