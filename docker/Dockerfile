@@ -34,8 +34,8 @@ RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # 默认路径，可被环境变量覆盖
-ENV INPUT_DIR=/app/input \
-    OUTPUT_DIR=/app/output \
+ENV INPUT_DIR=/input \
+    OUTPUT_DIR=/output \
     DEVICE=cuda
 
 ENTRYPOINT ["/app/run.sh"]

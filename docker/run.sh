@@ -2,10 +2,10 @@
 set -euo pipefail
 
 # UUSIVC 2026 推理入口
-# 环境变量：INPUT_DIR(默认 /app/input, 只读) / OUTPUT_DIR(默认 /app/output) / DEVICE(默认 cuda)
+# 环境变量：INPUT_DIR(默认 /input, 官方只读挂载) / OUTPUT_DIR(默认 /output, 官方读写) / DEVICE(默认 cuda)
 
-INPUT_DIR="${INPUT_DIR:-/app/input}"
-OUTPUT_DIR="${OUTPUT_DIR:-/app/output}"
+INPUT_DIR="${INPUT_DIR:-/input}"
+OUTPUT_DIR="${OUTPUT_DIR:-/output}"
 DEVICE="${DEVICE:-cuda}"
 
 mkdir -p "$OUTPUT_DIR"
