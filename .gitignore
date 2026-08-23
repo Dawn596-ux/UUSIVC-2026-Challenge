@@ -26,3 +26,11 @@ Thumbs.db
 
 # Data (managed via UUSIVC2026_DATA_ROOT env var)
 data/
+
+# Local diagnostic / operational scripts
+b0_diag.py
+b0_diag2.py
+tau_calib.py
+fix_video_npz.py
+auto_pipeline.sh
+run_dinov2_pipeline.sh
