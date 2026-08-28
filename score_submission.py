@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from PIL import Image
 
+from datasets.uusivc2026_paths import derive_group_key
 from utils.metrics import compute_binary_seg_score_np
 
 
@@ -121,10 +122,12 @@ def score_submission_dir(
     pred_dir: Path,
     val_entries: List[Dict[str, Any]],
     tolerance: int = 1,
+    collect_records: bool = False,
 ) -> Dict[str, Any]:
     seg_records: Dict[str, List[Dict[str, float]]] = defaultdict(list)
     task_records: Dict[str, List[Dict[str, float]]] = defaultdict(list)
     cls_by_dataset: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"gt": [], "prob": [], "pred": []})
+    sample_records: List[Dict[str, Any]] = []
 
     classification_path = pred_dir / "classification.json"
     classification = load_json(classification_path) if classification_path.exists() else {}
@@ -134,6 +137,7 @@ def score_submission_dir(
     for entry in val_entries:
         task = entry.get("task")
         dataset = dataset_of(entry)
+        group = str(derive_group_key(entry))
         root = Path(entry["_root"]) if "_root" in entry else None
 
         if task in {"image_seg", "video_seg", "ceus_seg"}:
@@ -176,6 +180,10 @@ def score_submission_dir(
 
             seg_records[f"{task}/{dataset}"].append(record)
             task_records[task].append(record)
+            sample_records.append({
+                "key": entry_key(entry), "task": task, "dataset": dataset, "group": group,
+                "dsc": float(record["dsc"]), "nsd": float(record["nsd"]), "score": float(record["score"]),
+            })
 
         elif task in {"image_cls", "ceus_cls"}:
             key = entry_key(entry)
@@ -185,11 +193,16 @@ def score_submission_dir(
                 continue
             matched_cls += 1
             pred = classification[key]
+            probs = list(pred.get("probability") or [])
+            prob = float(probs[1]) if len(probs) > 1 else float(probs[0]) if probs else 0.5
             bucket = cls_by_dataset[f"{task}/{dataset}"]
             bucket["gt"].append(int(label))
             bucket["pred"].append(int(pred["prediction"]))
-            probs = list(pred.get("probability") or [])
-            bucket["prob"].append(float(probs[1]) if len(probs) > 1 else float(probs[0]) if probs else 0.5)
+            bucket["prob"].append(prob)
+            sample_records.append({
+                "key": key, "task": task, "dataset": dataset, "group": group,
+                "gt": int(label), "prob": prob, "pred": int(pred["prediction"]),
+            })
 
     per_dataset: Dict[str, Dict[str, Any]] = {}
     for name, records in seg_records.items():
@@ -215,7 +228,7 @@ def score_submission_dir(
 
     overall = float(np.mean([v["score"] for v in per_task.values()])) if per_task else 0.0
 
-    return {
+    metrics = {
         "tolerance": tolerance,
         "classification_matched": matched_cls,
         "classification_missing": missing_cls,
@@ -223,6 +236,12 @@ def score_submission_dir(
         "per_task": per_task,
         "overall_score": overall,
     }
+    if collect_records:
+        # Per-sample scores keyed consistently across runs (same val_entries ->
+        # same key sets), with the patient group used by evaluate_ab.py's
+        # patient-level paired bootstrap.
+        metrics["records"] = sample_records
+    return metrics
 
 
 def submission_rel_path(entry: Dict[str, Any]) -> Path:
@@ -253,6 +272,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-manifest", type=str, required=True, help="Path to val_entries.json (labeled local val split).")
     parser.add_argument("--tolerance", type=int, default=1, help="NSD surface tolerance tau (default 1).")
     parser.add_argument("--output-json", type=str, default=None, help="Metrics output path (default <pred-dir>/metrics.json).")
+    parser.add_argument("--records-json", type=str, default=None,
+                        help="Also export per-sample records (key/task/dataset/group + per-sample score) "
+                             "for evaluate_ab.py. Default: write to <pred-dir>/metrics_records.json; "
+                             "pass 'none' to disable.")
     return parser.parse_args()
 
 
@@ -260,10 +283,16 @@ def main() -> None:
     args = parse_args()
     pred_dir = Path(args.pred_dir).resolve()
     val_entries = load_json(Path(args.val_manifest))
-    metrics = score_submission_dir(pred_dir, val_entries, tolerance=args.tolerance)
+    write_records = (args.records_json or "").lower() != "none"
+    metrics = score_submission_dir(pred_dir, val_entries, tolerance=args.tolerance, collect_records=write_records)
     out_path = Path(args.output_json).resolve() if args.output_json else pred_dir / "metrics.json"
+    records = metrics.pop("records", None)
     write_json(out_path, metrics)
     print(f"[Info] Metrics written to {out_path}")
+    if write_records:
+        records_path = Path(args.records_json).resolve() if args.records_json else pred_dir / "metrics_records.json"
+        write_json(records_path, records)
+        print(f"[Info] Per-sample records written to {records_path}")
     print_table(metrics)
 
 

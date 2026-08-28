@@ -203,6 +203,8 @@ def split_entries(
     seed: int,
     mode: str = "grouped_stratified",
     group_key_fn=derive_group_key,
+    cv_num_folds: Optional[int] = None,
+    cv_fold: Optional[int] = None,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split one task's entries into (train_entries, val_entries).
 
@@ -211,11 +213,26 @@ def split_entries(
     - ``grouped``: whole patient/case groups are assigned to one split only.
     - ``grouped_stratified``: grouped, and classification labels stay balanced
       across splits (groups are bucketed by their representative label first).
+
+    When ``cv_num_folds`` is set (with ``0 <= cv_fold < cv_num_folds``), a
+    disjoint K-fold CV split is produced instead: groups are dealt round-robin
+    into K buckets (label-stratified under ``grouped_stratified``), fold
+    ``cv_fold`` becomes the val set and the union of the others the train set.
+    The bucket assignment depends only on ``seed``, so every fold derives from
+    one consistent partition — val sets are disjoint and their union covers all
+    groups. ``val_fraction`` is ignored in this mode.
     """
-    if val_fraction <= 0:
-        return list(entries), []
     if len(entries) <= 1:
         return list(entries), list(entries)
+
+    if cv_num_folds is not None:
+        if cv_num_folds < 2:
+            raise ValueError(f"cv_num_folds must be >= 2, got {cv_num_folds}")
+        if cv_fold is None or not 0 <= cv_fold < cv_num_folds:
+            raise ValueError(f"cv_fold must be in [0, {cv_num_folds}) when cv_num_folds is set, got {cv_fold}")
+
+    if cv_num_folds is None and val_fraction <= 0:
+        return list(entries), []
 
     rng = random.Random(seed)
 
@@ -236,6 +253,30 @@ def split_entries(
         groups.setdefault(key, []).append(e)
     group_keys = sorted(groups.keys())
     rng.shuffle(group_keys)
+
+    if cv_num_folds is not None:
+        fold_buckets: List[List[str]] = [[] for _ in range(cv_num_folds)]
+        if mode == "grouped_stratified" and _groups_have_label(groups):
+            by_label: Dict[int, List[str]] = defaultdict(list)
+            for key in group_keys:
+                label = _group_rep_label(groups[key])
+                if label is not None:
+                    by_label[label].append(key)
+            for label in sorted(by_label.keys()):
+                keys = by_label[label]
+                rng.shuffle(keys)
+                for j, key in enumerate(keys):
+                    fold_buckets[j % cv_num_folds].append(key)
+        else:
+            for j, key in enumerate(group_keys):
+                fold_buckets[j % cv_num_folds].append(key)
+        train_keys = [key for i, bucket in enumerate(fold_buckets) if i != cv_fold for key in bucket]
+        val_keys = list(fold_buckets[cv_fold])
+        train = [e for key in train_keys for e in groups[key]]
+        val = [e for key in val_keys for e in groups[key]]
+        if not train:
+            train = list(entries)
+        return train, val
 
     if mode == "grouped_stratified" and _groups_have_label(groups):
         by_label: Dict[int, List[str]] = defaultdict(list)
@@ -298,6 +339,8 @@ def write_fixed_manifests(
     seed: int = 2024,
     max_samples_per_task: Optional[int] = None,
     split_mode: str = "grouped_stratified",
+    cv_num_folds: Optional[int] = None,
+    cv_fold: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Materialize labeled train/local-val manifests from TRAIN package data.
 
@@ -306,6 +349,11 @@ def write_fixed_manifests(
 
     - ``val_entries.json``: full metadata for every val entry (used by predict_val.py)
     - ``split_summary.json``: per-task sample/group/label counts for manual inspection
+
+    ``cv_num_folds``/``cv_fold`` switch the split to disjoint patient-level K-fold
+    CV (see ``split_entries``). Callers MUST pass a fold-specific ``output_dir``
+    (e.g. ``.../manifests_cv3/fold0``) so different folds never overwrite each
+    other or the canonical single-holdout manifests.
     """
     data_root = resolve_data_root(data_root_like)
     output_dir = Path(output_dir).resolve()
@@ -317,12 +365,16 @@ def write_fixed_manifests(
     summary: Dict[str, Any] = {}
     for task, entries in labeled_buckets.items():
         train_entries, val_entries_task = split_entries(
-            entries, local_val_fraction, seed, mode=split_mode
+            entries, local_val_fraction, seed, mode=split_mode,
+            cv_num_folds=cv_num_folds, cv_fold=cv_fold,
         )
         split_buckets["train"][task] = train_entries
         split_buckets["val"][task] = val_entries_task
         val_entries.extend(val_entries_task)
         summary[task] = _summarize_split(train_entries, val_entries_task)
+
+    if cv_num_folds is not None:
+        summary["_cv"] = {"num_folds": cv_num_folds, "fold": cv_fold, "seed": seed}
 
     built: Dict[str, Dict[str, Any]] = {}
     for phase in phases:
@@ -383,6 +435,8 @@ def expand_fixed_uusivc_data_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     seed = int(cfg.get("split_seed", cfg.get("seed", 2024)))
     max_samples = cfg.get("debug_max_samples_per_task", None)
     split_mode = str(cfg.get("split_mode", "grouped_stratified"))
+    cv_num_folds = cfg.get("cv_num_folds", None)
+    cv_fold = cfg.get("cv_fold", None)
     generated = write_fixed_manifests(
         data_root,
         out_dir,
@@ -391,6 +445,8 @@ def expand_fixed_uusivc_data_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
         seed=seed,
         max_samples_per_task=max_samples,
         split_mode=split_mode,
+        cv_num_folds=int(cv_num_folds) if cv_num_folds is not None else None,
+        cv_fold=int(cv_fold) if cv_fold is not None else None,
     )
     expanded = dict(cfg)
     expanded.update(generated)

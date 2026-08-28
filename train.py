@@ -75,6 +75,33 @@ def parse_args() -> argparse.Namespace:
         help="Fraction of labeled TRAIN data held out for local validation. Overrides data.local_val_fraction.",
     )
     parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=None,
+        help="Seed of the patient-level split. Overrides data.split_seed.",
+    )
+    parser.add_argument(
+        "--cv-num-folds",
+        type=int,
+        default=None,
+        help="Enable a disjoint patient-level K-fold CV split (data.cv_num_folds). "
+             "Use together with --cv-fold; --local-val-fraction is ignored in this mode.",
+    )
+    parser.add_argument(
+        "--cv-fold",
+        type=int,
+        default=None,
+        help="Fold index (0-based) used as local validation when --cv-num-folds is set.",
+    )
+    parser.add_argument(
+        "--manifest-dir",
+        type=str,
+        default=None,
+        help="Manifest output directory. Overrides data.manifest_cache_dir. When --cv-fold is "
+             "set without this flag, defaults to outputs/uusivc2026_fixed/manifests_cv{K}/fold{i} "
+             "so folds never overwrite each other or the canonical holdout manifests.",
+    )
+    parser.add_argument(
         "--full-train",
         action="store_true",
         help="Use all labeled TRAIN data for training and skip per-epoch validation/best-checkpoint selection.",
@@ -292,6 +319,25 @@ def main() -> None:
         cfg.setdefault("trainer", {})["keep_best"] = args.keep_best
     if args.local_val_fraction is not None:
         cfg.setdefault("data", {})["local_val_fraction"] = args.local_val_fraction
+    if args.split_seed is not None:
+        cfg.setdefault("data", {})["split_seed"] = args.split_seed
+    if args.cv_num_folds is not None:
+        cfg.setdefault("data", {})["cv_num_folds"] = args.cv_num_folds
+    if args.cv_fold is not None:
+        cfg.setdefault("data", {})["cv_fold"] = args.cv_fold
+    if args.cv_fold is not None and args.cv_num_folds is None:
+        raise ValueError("--cv-fold requires --cv-num-folds.")
+    if args.cv_fold is not None:
+        if args.manifest_dir:
+            cfg.setdefault("data", {})["manifest_cache_dir"] = args.manifest_dir
+        else:
+            fold = args.cv_fold
+            folds = args.cv_num_folds
+            cfg.setdefault("data", {})["manifest_cache_dir"] = (
+                f"./outputs/uusivc2026_fixed/manifests_cv{folds}/fold{fold}"
+            )
+    elif args.manifest_dir:
+        cfg.setdefault("data", {})["manifest_cache_dir"] = args.manifest_dir
     if args.full_train:
         cfg.setdefault("data", {})["local_val_fraction"] = 0.0
         cfg.setdefault("train", {})["require_validation"] = False

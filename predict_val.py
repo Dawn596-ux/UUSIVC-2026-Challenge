@@ -161,8 +161,10 @@ def main() -> None:
     #    measured exactly as the official scorer would see them).
     metrics: Dict[str, Any] = {}
     if not args.no_score:
-        metrics = score_submission_dir(out_dir, val_entries, tolerance=args.tolerance)
+        metrics = score_submission_dir(out_dir, val_entries, tolerance=args.tolerance, collect_records=True)
+        records = metrics.pop("records")
         write_json(out_dir / "metrics.json", metrics)
+        write_json(out_dir / "metrics_records.json", records)
         print_table(metrics)
 
     # 3) Zip the official submission files.
