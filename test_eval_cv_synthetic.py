@@ -197,7 +197,19 @@ def check_evaluate_ab() -> None:
         raise AssertionError("expected ValueError on key mismatch")
     except ValueError:
         pass
-    print("[PASS] evaluate_ab: zero-delta identity + improvement CI/worst")
+
+    # mixed seg+cls records: segments must stay task-homogeneous (regression:
+    # cls buckets once received seg records and crashed on missing 'gt')
+    mixed_a = arm(0.0) + [
+        {"key": f"vg{g}", "task": "image_seg", "dataset": "DS_IMG", "group": f"grp{g}",
+         "dsc": 0.5 + 0.1 * (g % 3), "nsd": 0.6, "score": 0.7} for g in range(n_groups // 2)]
+    mixed_b = arm(0.30) + [
+        {"key": f"vg{g}", "task": "image_seg", "dataset": "DS_IMG", "group": f"grp{g}",
+         "dsc": 0.6 + 0.1 * (g % 3), "nsd": 0.6, "score": 0.75} for g in range(n_groups // 2)]
+    rows3 = bootstrap_deltas(mixed_a, mixed_b, n_boot=100, seed=0, alpha=0.05)
+    assert all(np.isfinite(v) for r in rows3.values() for v in r.values()), rows3
+    assert rows3["image_seg"]["delta"] > 0 and rows3["image_cls"]["delta"] > 0
+    print("[PASS] evaluate_ab: zero-delta identity + improvement CI/worst + mixed-task segments")
 
 
 def write_fold(root: Path, name: str, overall: float, tasks: dict[str, float], datasets: dict[str, float]) -> None:

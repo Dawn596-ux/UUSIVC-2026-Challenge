@@ -37,7 +37,7 @@ import argparse
 import json
 import random
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -126,43 +126,46 @@ def bootstrap_deltas(
     a_paired, b_paired = paired_records(records_a, records_b)
 
     segments_a, tasks = build_segments(a_paired)
-    segments_b, _ = build_segments(b_paired)
-    assert set(segments_a) == set(segments_b)
 
-    # Per-group sample buckets per segment (patients are the resampling unit).
-    groups = sorted({r["group"] for r in a_paired})
-    group_bucket: Dict[str, Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]] = {
-        g: {name: ([], []) for name in segments_a} for g in groups
+    # Per-segment, per-group paired sample buckets. A record joins ONLY its own
+    # dataset bucket and task bucket — never other segments (which would mix seg
+    # and cls records and corrupt set-level cls metrics).
+    seg_groups: Dict[str, Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]] = {
+        name: defaultdict(lambda: ([], [])) for name in segments_a
     }
     for r_a, r_b in zip(a_paired, b_paired):
         assert r_a["group"] == r_b["group"]
-        bucket = group_bucket[r_a["group"]]
-        for name in segments_a:
-            bucket[name][0].append(r_a)
-            bucket[name][1].append(r_b)
+        for name in (f"{r_a['task']}/{r_a['dataset']}", r_a["task"]):
+            bucket = seg_groups[name][r_a["group"]]
+            bucket[0].append(r_a)
+            bucket[1].append(r_b)
 
-    def all_deltas(picked: List[str]) -> Tuple[Dict[str, float], float]:
-        deltas: Dict[str, float] = {}
-        for name in segments_a:
-            sa: List[Dict[str, Any]] = []
-            sb: List[Dict[str, Any]] = []
-            for g in picked:
-                pair = group_bucket[g][name]
-                sa.extend(pair[0])
-                sb.extend(pair[1])
-            deltas[name] = sample_score(sb) - sample_score(sa)
-        overall = float(np.mean([deltas[t] for t in tasks]))
-        deltas["overall"] = overall
-        return deltas, overall
+    def segment_delta(name: str, counter: Dict[str, int]) -> float:
+        sa: List[Dict[str, Any]] = []
+        sb: List[Dict[str, Any]] = []
+        for g, bucket in seg_groups[name].items():
+            mult = counter.get(g, 0)
+            for _ in range(mult):
+                sa.extend(bucket[0])
+                sb.extend(bucket[1])
+        if not sa:
+            return 0.0  # degenerate resample with no samples for this segment
+        return sample_score(sb) - sample_score(sa)
 
-    point, _ = all_deltas(groups)  # full sample = one draw of every group
+    def all_deltas(counter: Dict[str, int]) -> Dict[str, float]:
+        deltas = {name: segment_delta(name, counter) for name in segments_a}
+        deltas["overall"] = float(np.mean([deltas[t] for t in tasks]))
+        return deltas
+
+    groups = sorted({r["group"] for r in a_paired})
+    point = all_deltas({g: 1 for g in groups})  # full sample = every group once
 
     rng = random.Random(seed)
     point_by_name: Dict[str, List[float]] = defaultdict(list)
     worst: Dict[str, float] = {name: float("inf") for name in list(segments_a) + ["overall"]}
     for _ in range(n_boot):
-        picked = rng.choices(groups, k=len(groups))
-        deltas, _ = all_deltas(picked)
+        counter = Counter(rng.choices(groups, k=len(groups)))
+        deltas = all_deltas(counter)
         for name, d in deltas.items():
             point_by_name[name].append(d)
             worst[name] = min(worst[name], d)
