@@ -25,6 +25,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root for direct invocation
+
 from datasets.uusivc2026_paths import (
     _collect_labeled_training_entries,
     derive_group_key,
