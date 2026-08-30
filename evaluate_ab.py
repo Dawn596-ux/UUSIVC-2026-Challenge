@@ -225,12 +225,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def arm_label(path: str) -> str:
+    return Path(path).stem.replace("_records", "") or Path(path).parent.name
+
+
 def main() -> None:
     args = parse_args()
     records_a = load_records(args.records_a)
     records_b = load_records(args.records_b)
     rows = bootstrap_deltas(records_a, records_b, n_boot=args.bootstrap, seed=args.seed, alpha=args.alpha)
-    print_report(rows, Path(args.records_a).parent.name, Path(args.records_b).parent.name, args.bootstrap, args.alpha)
+    print_report(rows, arm_label(args.records_a), arm_label(args.records_b), args.bootstrap, args.alpha)
     if args.output_json:
         write_json(
             Path(args.output_json),
