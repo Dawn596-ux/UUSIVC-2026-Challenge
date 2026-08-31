@@ -113,7 +113,7 @@ def build_augmentation(aug_extra: str = "none"):
         A.HorizontalFlip(p=0.5),
         A.ShiftScaleRotate(
             shift_limit=0.03125, scale_limit=0.05, rotate_limit=8,
-            border_mode=0, value=0, mask_value=0, p=0.5,
+            border_mode=0, fill=0, fill_mask=0, p=0.5,
         ),
         A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
         A.RandomGamma(gamma_limit=(90, 110), p=0.5),
