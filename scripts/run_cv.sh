@@ -30,6 +30,7 @@ K=${K:-3}
 SEED=${SEED:-2024}
 TAG=${TAG:-baseline}
 ONLY_FOLD=${ONLY_FOLD:-}
+AUG_EXTRA=${AUG_EXTRA:-}
 CVROOT=outputs/cv/K${K}_${TAG}
 mkdir -p "$CVROOT" logs
 
@@ -54,6 +55,7 @@ for FOLD in $(seq 0 $((K - 1))); do
       --data-root "$DATA_ROOT" \
       --split-seed "$SEED" --cv-num-folds "$K" --cv-fold "$FOLD" \
       --save-dir "$FOLDDIR/stage1_seg_aug2" \
+      ${AUG_EXTRA:+--aug-extra "$AUG_EXTRA"} \
       2>&1 | tee "logs/cv_${TAG}_fold${FOLD}_stage1.log"
     touch "$FOLDDIR/stage1_seg_aug2/TRAIN_DONE"
   fi

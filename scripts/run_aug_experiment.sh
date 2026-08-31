@@ -32,7 +32,7 @@ TAG="$BASELINE_TAG" bash scripts/run_cv.sh
 echo "[AUG-EXP] Stage B: fold0 screens"
 for cand in $CANDIDATES; do
   echo "[AUG-EXP] --- fold0 screen: $cand ---"
-  TAG="$cand" ONLY_FOLD=0 bash scripts/run_cv.sh
+  TAG="$cand" AUG_EXTRA="$cand" ONLY_FOLD=0 bash scripts/run_cv.sh
 done
 
 echo "[AUG-EXP] Stage C: select winners (fold0 overall vs baseline fold0)"
