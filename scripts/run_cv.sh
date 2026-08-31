@@ -17,6 +17,7 @@
 #   TAG=aug3 bash scripts/run_cv.sh                         # candidate recipe
 #   TAG=aug3 BASELINE=outputs/cv/K3_baseline bash scripts/run_cv.sh
 #   K=5 TAG=x bash scripts/run_cv.sh                        # more folds
+#   ONLY_FOLD=0 TAG=clahe bash scripts/run_cv.sh            # single-fold smoke screen
 #
 # Aggregate afterwards (also run automatically at the end):
 #   python -B aggregate_cv.py outputs/cv/K3_<TAG> --baseline outputs/cv/K3_baseline
@@ -28,12 +29,17 @@ DATA_ROOT=/root/autodl-tmp/data
 K=${K:-3}
 SEED=${SEED:-2024}
 TAG=${TAG:-baseline}
+ONLY_FOLD=${ONLY_FOLD:-}
 CVROOT=outputs/cv/K${K}_${TAG}
 mkdir -p "$CVROOT" logs
 
 echo "[CV] root=$CVROOT K=$K seed=$SEED tag=$TAG"
 
 for FOLD in $(seq 0 $((K - 1))); do
+  if [ -n "$ONLY_FOLD" ] && [ "$FOLD" != "$ONLY_FOLD" ]; then
+    echo "[CV] [skip] fold$FOLD (ONLY_FOLD=$ONLY_FOLD)"
+    continue
+  fi
   FOLDDIR=$CVROOT/fold$FOLD
   if [ -f "$FOLDDIR/predict/metrics.json" ]; then
     echo "[CV] [skip] fold$FOLD already scored"
@@ -73,7 +79,14 @@ for FOLD in $(seq 0 $((K - 1))); do
 done
 
 echo "[CV] aggregating..."
-$PY -B aggregate_cv.py "$CVROOT" \
-  ${BASELINE:+--baseline "$BASELINE"} \
-  --output-json "$CVROOT/summary.json"
+if [ -n "$ONLY_FOLD" ]; then
+  # single-fold screen: fold sets won't match a full K-fold baseline, so no
+  # paired comparison here — aggregate_cv reports the absolute single-fold
+  # table only; paired deltas are read manually from fold$FOLD/predict/metrics.json.
+  $PY -B aggregate_cv.py "$CVROOT" --output-json "$CVROOT/summary.json"
+else
+  $PY -B aggregate_cv.py "$CVROOT" \
+    ${BASELINE:+--baseline "$BASELINE"} \
+    --output-json "$CVROOT/summary.json"
+fi
 echo "[CV] done: $CVROOT/summary.json"

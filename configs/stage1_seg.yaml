@@ -90,6 +90,7 @@ data:
   num_workers: 0
   num_frames: 10
   augmentation: true
+  aug_extra: none  # none|clahe|elastic|gaussnoise|dropout (single-op ablation, experiment-aug-image-seg)
 
   batch_size_image_seg: 4
   batch_size_video_seg: 1

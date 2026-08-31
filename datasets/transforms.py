@@ -91,17 +91,25 @@ def _add_speckle_noise(img: np.ndarray, **kwargs) -> np.ndarray:
     return np.clip(img.astype(np.float32) * noise, 0, 255).astype(np.uint8)
 
 
-def build_augmentation():
+def build_augmentation(aug_extra: str = "none"):
     """构建训练用 albumentations 增强管线（几何 + 强度 + 超声斑点噪声）。
 
     惰性 import albumentations（本地不装该依赖，仅服务器训练环境需要）。
     几何增强通过 albumentations 的 mask 同步机制保证 mask 与 image 一致变换。
 
     参数经调优（第二轮）：减弱几何/强度扰动幅度，避免 DSC 下降而抵消 NSD 收益。
+
+    aug_extra: 在基础管线之后追加「一个」额外算子，用于单算子消融实验
+      （experiment-aug-image-seg 分支，K=3 CV 初筛）。取值：
+        none       — 仅基础管线（现役 v2 配方，正式交付）
+        clahe      — A.CLAHE 局部对比度归一化（对抗设备增益 domain gap）
+        elastic    — A.ElasticTransform 弹性形变（覆盖非刚性几何）
+        gaussnoise — A.GaussNoise 加性高斯噪声（与乘性 speckle 互补）
+        dropout    — A.CoarseDropout 遮挡鲁棒（探头压迹/伪影）
     """
     import albumentations as A
 
-    return A.Compose([
+    pipeline = [
         A.HorizontalFlip(p=0.5),
         A.ShiftScaleRotate(
             shift_limit=0.03125, scale_limit=0.05, rotate_limit=8,
@@ -110,7 +118,28 @@ def build_augmentation():
         A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
         A.RandomGamma(gamma_limit=(90, 110), p=0.5),
         A.Lambda(image=_add_speckle_noise, p=0.3),
-    ])
+    ]
+
+    extras = {
+        "clahe": A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.5),
+        "elastic": A.ElasticTransform(alpha=1, sigma=50, p=0.5),
+        "gaussnoise": A.GaussNoise(std_range=(0.01, 0.03), p=0.4),
+        "dropout": A.CoarseDropout(
+            num_holes_range=(1, 4),
+            hole_height_range=(0.05, 0.2),
+            hole_width_range=(0.05, 0.2),
+            fill=0, fill_mask=0, p=0.3,
+        ),
+    }
+    key = (aug_extra or "none").strip().lower()
+    if key != "none":
+        if key not in extras:
+            raise ValueError(
+                f"Unknown aug_extra={aug_extra!r}; expected one of {sorted(extras)} + 'none'."
+            )
+        pipeline.append(extras[key])
+
+    return A.Compose(pipeline)
 
 
 class BasicImageTransform:

@@ -251,7 +251,7 @@ def build_stage1_seg_loaders(cfg: Dict[str, Any]) -> Dict[str, Dict[str, DataLoa
     # 数据增强：仅训练集增强，验证/推理不增强。
     # 视频任务（cardiac/ceus）帧一致性增强暂缓，避免帧间抖动，先只对 image_seg 增强。
     if cfg.get("augmentation", False):
-        aug = build_augmentation()
+        aug = build_augmentation(cfg.get("aug_extra", "none"))
         image_seg_train_tf = BasicImageTransform((224, 224), binary_mask=False, augmentation=aug)
     ceus_dualview_fusion = cfg.get("ceus_dualview_fusion", True)
     ceus_fusion_mode = cfg.get("ceus_fusion_mode", "baseline_difference")
