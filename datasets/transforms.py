@@ -131,8 +131,10 @@ def build_augmentation(aug_extra: str = "none"):
             fill=0, fill_mask=0, p=0.3,
         ),
     }
-    key = (aug_extra or "none").strip().lower()
-    if key != "none":
+    keys = [k.strip().lower() for k in (aug_extra or "none").split(",") if k.strip()]
+    for key in keys:
+        if key == "none":
+            continue
         if key not in extras:
             raise ValueError(
                 f"Unknown aug_extra={aug_extra!r}; expected one of {sorted(extras)} + 'none'."

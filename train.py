@@ -94,6 +94,13 @@ def parse_args() -> argparse.Namespace:
         help="Fold index (0-based) used as local validation when --cv-num-folds is set.",
     )
     parser.add_argument(
+        "--aug-extra",
+        type=str,
+        default=None,
+        help="Augmentation ablation operator(s), comma-separated (none|clahe|elastic|gaussnoise|dropout). "
+             "Overrides data.aug_extra.",
+    )
+    parser.add_argument(
         "--manifest-dir",
         type=str,
         default=None,
@@ -325,6 +332,8 @@ def main() -> None:
         cfg.setdefault("data", {})["cv_num_folds"] = args.cv_num_folds
     if args.cv_fold is not None:
         cfg.setdefault("data", {})["cv_fold"] = args.cv_fold
+    if args.aug_extra is not None:
+        cfg.setdefault("data", {})["aug_extra"] = args.aug_extra
     if args.cv_fold is not None and args.cv_num_folds is None:
         raise ValueError("--cv-fold requires --cv-num-folds.")
     if args.cv_fold is not None:

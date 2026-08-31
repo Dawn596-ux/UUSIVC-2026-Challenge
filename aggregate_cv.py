@@ -33,12 +33,23 @@ import numpy as np
 from score_submission import load_json, write_json
 
 
+def _metrics_path(fold_dir: Path) -> Path:
+    """Resolve the per-fold metrics.json.
+
+    run_cv.sh writes predict_val output into foldX/predict/ (so metrics.json sits
+    under that subdir); the synthetic self-test writes it directly as
+    foldX/metrics.json. Support both layouts so aggregation never misses a fold.
+    """
+    sub = fold_dir / "predict" / "metrics.json"
+    return sub if sub.exists() else fold_dir / "metrics.json"
+
+
 def discover_folds(cv_root: Path) -> List[Path]:
     if not cv_root.is_dir():
         raise FileNotFoundError(f"CV root not found: {cv_root}")
-    folds = sorted(p for p in cv_root.iterdir() if p.is_dir() and (p / "metrics.json").exists())
+    folds = sorted(p for p in cv_root.iterdir() if p.is_dir() and _metrics_path(p).exists())
     if not folds:
-        raise FileNotFoundError(f"No fold*/metrics.json under {cv_root}")
+        raise FileNotFoundError(f"No fold*/metrics.json (or fold*/predict/metrics.json) under {cv_root}")
     return folds
 
 
@@ -53,7 +64,7 @@ def load_run(cv_root: Path) -> Dict[str, Any]:
         "n_dataset": {},
     }
     for p in folds:
-        m = load_json(p / "metrics.json")
+        m = load_json(_metrics_path(p))
         run["overall"].append(float(m["overall_score"]))
         for task, tm in m["per_task"].items():
             run["per_task"].setdefault(task, []).append(float(tm["score"]))
