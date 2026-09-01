@@ -19,10 +19,15 @@
 #   K=5 TAG=x bash scripts/run_cv.sh                        # more folds
 #   ONLY_FOLD=0 TAG=clahe bash scripts/run_cv.sh            # single-fold smoke screen
 #
+# Config overrides (experiment-video-temporal: video arms pass the *_mem yamls;
+# defaults keep the original image-arm behaviour byte-identical):
+#   ONLY_FOLD=0 TAG=video_memhead STAGE1_CFG=configs/stage1_seg_mem.yaml \
+#     STAGE2_CFG=configs/stage2_cls_mem.yaml bash scripts/run_cv.sh
+#
 # Aggregate afterwards (also run automatically at the end):
 #   python -B aggregate_cv.py outputs/cv/K3_<TAG> --baseline outputs/cv/K3_baseline
 set -euo pipefail
-cd /root/autodl-tmp/project/code
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."
 export OMP_NUM_THREADS=4
 PY=/root/miniconda3/bin/python
 DATA_ROOT=/root/autodl-tmp/data
@@ -31,10 +36,12 @@ SEED=${SEED:-2024}
 TAG=${TAG:-baseline}
 ONLY_FOLD=${ONLY_FOLD:-}
 AUG_EXTRA=${AUG_EXTRA:-}
+STAGE1_CFG=${STAGE1_CFG:-configs/stage1_seg.yaml}
+STAGE2_CFG=${STAGE2_CFG:-configs/stage2_cls.yaml}
 CVROOT=outputs/cv/K${K}_${TAG}
 mkdir -p "$CVROOT" logs
 
-echo "[CV] root=$CVROOT K=$K seed=$SEED tag=$TAG"
+echo "[CV] root=$CVROOT K=$K seed=$SEED tag=$TAG stage1=$STAGE1_CFG stage2=$STAGE2_CFG"
 
 for FOLD in $(seq 0 $((K - 1))); do
   if [ -n "$ONLY_FOLD" ] && [ "$FOLD" != "$ONLY_FOLD" ]; then
@@ -56,7 +63,7 @@ for FOLD in $(seq 0 $((K - 1))); do
       RESUME_ARG="--resume-checkpoint $FOLDDIR/stage1_seg_aug2/latest_stage1_seg.pth"
       echo "[CV] [resume] stage1 from latest_stage1_seg.pth"
     fi
-    $PY -B train.py --stage stage1_seg --config configs/stage1_seg.yaml \
+    $PY -B train.py --stage stage1_seg --config "$STAGE1_CFG" \
       --data-root "$DATA_ROOT" \
       --split-seed "$SEED" --cv-num-folds "$K" --cv-fold "$FOLD" \
       --save-dir "$FOLDDIR/stage1_seg_aug2" \
@@ -73,7 +80,7 @@ for FOLD in $(seq 0 $((K - 1))); do
       RESUME_ARG="--resume-checkpoint $FOLDDIR/stage2_cls_aug2/latest_stage2_cls.pth"
       echo "[CV] [resume] stage2 from latest_stage2_cls.pth"
     fi
-    $PY -B train.py --stage stage2_cls --config configs/stage2_cls.yaml \
+    $PY -B train.py --stage stage2_cls --config "$STAGE2_CFG" \
       --data-root "$DATA_ROOT" \
       --init-checkpoint "$FOLDDIR/stage1_seg_aug2/best_checkpoints/best_stage1_seg_rank1.pth" \
       --split-seed "$SEED" --cv-num-folds "$K" --cv-fold "$FOLD" \
@@ -83,8 +90,9 @@ for FOLD in $(seq 0 $((K - 1))); do
     touch "$FOLDDIR/stage2_cls_aug2/TRAIN_DONE"
   fi
 
-  # inference + file-based scoring on this fold's val split
-  $PY -B predict_val.py --data-root "$DATA_ROOT" --device cuda \
+  # inference + file-based scoring on this fold's val split (--config must match
+  # the stage2 arm config so the model graph (e.g. memory head) matches the ckpt)
+  $PY -B predict_val.py --config "$STAGE2_CFG" --data-root "$DATA_ROOT" --device cuda \
     --val-manifest "outputs/uusivc2026_fixed/manifests_cv${K}/fold${FOLD}/val_entries.json" \
     --checkpoint "$FOLDDIR/stage2_cls_aug2/best_checkpoints/best_stage2_cls_rank1.pth" \
     --output-dir "$FOLDDIR/predict" --no-zip \

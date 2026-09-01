@@ -73,6 +73,7 @@ class DiagnosticsHook:
             "video_model.backbone",
             "video_model.temporal_router",
             "video_model.temporal_router.simple_video_seg_head",
+            "video_model.temporal_router.memory_video_seg_head",
             "video_model.temporal_router.video_cls_head",
         ]
         for attr_path in candidate_attrs:

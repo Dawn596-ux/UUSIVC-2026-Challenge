@@ -13,6 +13,7 @@ from models.framework.video_model import VideoTaskModel
 from models.heads.classification_head import ClsHead
 from models.heads.seg_head import SegHead2D, SegHeadVideoSimple
 from models.heads.temporal_cls_head import TemporalClsHead
+from models.heads.memory_video_seg_head import MemoryVideoSegHead
 from models.task_defs import (
     BUS_IMAGE,
     BUS_VIDEO,
@@ -74,6 +75,9 @@ def build_model(cfg: Dict[str, Any]) -> UnifiedModel:
         use_prompt=model_cfg.get("use_prompt", False),
     )
 
+    # memory mode: build the cross-frame head when enabled (default off => byte-identical behaviour)
+    use_memory_seg = model_cfg.get("use_memory_seg", False) or model_cfg.get("video_seg_mode", "simple") == "memory"
+
     temporal_router = TemporalRouter(
         simple_video_seg_head=SegHeadVideoSimple(
             in_channels=model_cfg["seg_feature_channels"],
@@ -82,7 +86,14 @@ def build_model(cfg: Dict[str, Any]) -> UnifiedModel:
             dropout=model_cfg.get("seg_dropout", 0.1),
             upsample_scale=model_cfg.get("seg_upsample_scale", 1),
         ),
-        memory_video_seg_head=None,
+        memory_video_seg_head=MemoryVideoSegHead(
+            in_channels=model_cfg["seg_feature_channels"],
+            mid_channels=model_cfg.get("seg_head_mid_channels", 128),
+            num_classes=model_cfg["num_seg_classes"],
+            dropout=model_cfg.get("seg_dropout", 0.1),
+            upsample_scale=model_cfg.get("seg_upsample_scale", 1),
+            temporal_kernel=model_cfg.get("memory_temporal_kernel", 3),
+        ) if use_memory_seg else None,
         video_cls_head=TemporalClsHead(
             in_channels=model_cfg["cls_feature_channels"],
             num_classes=model_cfg["num_cls_classes"],
