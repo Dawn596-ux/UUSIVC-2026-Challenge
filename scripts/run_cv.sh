@@ -51,22 +51,34 @@ for FOLD in $(seq 0 $((K - 1))); do
 
   # stage 1: segmentation (aug2 recipe) on this fold's train split
   if [ ! -f "$FOLDDIR/stage1_seg_aug2/TRAIN_DONE" ]; then
+    RESUME_ARG=""
+    if [ -f "$FOLDDIR/stage1_seg_aug2/latest_stage1_seg.pth" ]; then
+      RESUME_ARG="--resume-checkpoint $FOLDDIR/stage1_seg_aug2/latest_stage1_seg.pth"
+      echo "[CV] [resume] stage1 from latest_stage1_seg.pth"
+    fi
     $PY -B train.py --stage stage1_seg --config configs/stage1_seg.yaml \
       --data-root "$DATA_ROOT" \
       --split-seed "$SEED" --cv-num-folds "$K" --cv-fold "$FOLD" \
       --save-dir "$FOLDDIR/stage1_seg_aug2" \
       ${AUG_EXTRA:+--aug-extra "$AUG_EXTRA"} \
+      $RESUME_ARG \
       2>&1 | tee "logs/cv_${TAG}_fold${FOLD}_stage1.log"
     touch "$FOLDDIR/stage1_seg_aug2/TRAIN_DONE"
   fi
 
   # stage 2: classification, chained from this fold's stage1 best
   if [ ! -f "$FOLDDIR/stage2_cls_aug2/TRAIN_DONE" ]; then
+    RESUME_ARG=""
+    if [ -f "$FOLDDIR/stage2_cls_aug2/latest_stage2_cls.pth" ]; then
+      RESUME_ARG="--resume-checkpoint $FOLDDIR/stage2_cls_aug2/latest_stage2_cls.pth"
+      echo "[CV] [resume] stage2 from latest_stage2_cls.pth"
+    fi
     $PY -B train.py --stage stage2_cls --config configs/stage2_cls.yaml \
       --data-root "$DATA_ROOT" \
       --init-checkpoint "$FOLDDIR/stage1_seg_aug2/best_checkpoints/best_stage1_seg_rank1.pth" \
       --split-seed "$SEED" --cv-num-folds "$K" --cv-fold "$FOLD" \
       --save-dir "$FOLDDIR/stage2_cls_aug2" \
+      $RESUME_ARG \
       2>&1 | tee "logs/cv_${TAG}_fold${FOLD}_stage2.log"
     touch "$FOLDDIR/stage2_cls_aug2/TRAIN_DONE"
   fi
