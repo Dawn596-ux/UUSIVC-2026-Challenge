@@ -53,6 +53,10 @@ def parse_args() -> argparse.Namespace:
                         help="Full-model checkpoint path or directory. If omitted, the best Stage-2 checkpoint is used.")
     parser.add_argument("--secondary-checkpoint", type=str, default=None,
                         help="Optional second full-model checkpoint used for video_seg and image_cls (mixed-checkpoint recipe).")
+    parser.add_argument("--secondary-config", type=str, default=None,
+                        help="Model config for the secondary checkpoint. Defaults to --config. Required when the secondary checkpoint has a different graph (e.g. MemoryVideoSegHead).")
+    parser.add_argument("--secondary-tasks", type=str, default="video_seg,image_cls",
+                        help="Comma-separated task list served by the secondary checkpoint in mixed mode.")
     parser.add_argument("--which", choices=["best", "latest"], default="best",
                         help="Checkpoint choice when --checkpoint is not provided.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto",
@@ -119,17 +123,22 @@ def main() -> None:
 
     model = load_model(cfg, checkpoint_path, device)
     secondary_model = None
+    secondary_tasks: set = set()
     if args.secondary_checkpoint:
         secondary_path = resolve_checkpoint_reference(args.secondary_checkpoint, prefix=None)
-        secondary_model = load_model(cfg, secondary_path, device)
+        secondary_cfg = load_yaml(args.secondary_config) if args.secondary_config else cfg
+        secondary_model = load_model(secondary_cfg, secondary_path, device)
+        secondary_tasks = {t.strip() for t in args.secondary_tasks.split(",") if t.strip()}
         print(f"[Info] Secondary Checkpoint: {secondary_path}")
+        print(f"[Info] Secondary Config: {args.secondary_config or args.config}")
+        print(f"[Info] Secondary Tasks: {sorted(secondary_tasks)}")
 
     ceus_processor = build_ceus_processor(cfg.get("data", {}))
     num_frames = int(cfg.get("data", {}).get("num_frames", 10))
 
-    # 混合 checkpoint：video_seg / image_cls 用 secondary（旧 encoder 未漂移），其余用主 checkpoint
+    # 混合 checkpoint：secondary_tasks 内的任务用 secondary（默认 video_seg/image_cls，旧 encoder 未漂移），其余用主 checkpoint
     def _model_for(task: str):
-        if secondary_model is not None and task in {"video_seg", "image_cls"}:
+        if secondary_model is not None and task in secondary_tasks:
             return secondary_model
         return model
 
@@ -181,6 +190,8 @@ def main() -> None:
         "config": args.config,
         "checkpoint": checkpoint_path,
         "secondary_checkpoint": args.secondary_checkpoint,
+        "secondary_config": (args.secondary_config or args.config) if secondary_model else None,
+        "secondary_tasks": sorted(secondary_tasks) if secondary_model else None,
         "tolerance": args.tolerance,
         "classification_samples": counts["classification"],
         "classification_keys": len(classification),
