@@ -1,0 +1,95 @@
+run:
+  stage: stage2_cls
+
+sampling:
+  stage2_cls_ratio:
+    image_cls: 2
+    video_cls_ceus: 1
+
+train:
+  seed: 2024
+  deterministic: true
+  max_epochs: 40
+  use_amp: true
+  init_checkpoint: ./outputs/stage1_seg_aug2
+  strict_load: true
+  require_validation: true
+
+freeze:
+  stage2_cls:
+    freeze_keywords:
+      - image_model.backbone.encoder
+      - image_model.backbone.seg_laterals
+      - image_model.backbone.seg_smooth
+      - image_model.seg_head
+      - video_model.temporal_router.simple_video_seg_head
+      - video_model.temporal_router.memory_video_seg_head
+    frozen_eval_keywords:
+      - image_model.backbone.encoder
+      - image_model.backbone.seg_laterals
+      - image_model.backbone.seg_smooth
+      - image_model.seg_head
+      - video_model.temporal_router.simple_video_seg_head
+      - video_model.temporal_router.memory_video_seg_head
+
+trainer:
+  save_dir: ./outputs/stage2_cls_aug2
+  log_interval: 20
+  monitor_metric: mean_score
+  keep_best: 3
+
+optimizer:
+  name: adamw
+  lr: 0.0001
+  weight_decay: 0.00001
+
+scheduler:
+  name: cosine
+  eta_min: 0.000001
+
+loss:
+  ce_weight: 0.4
+  dice_weight: 0.6
+  cls_label_smoothing: 0.05
+  auc_margin_weight: 0.5
+  auc_margin_margin: 1.0
+
+model:
+  in_channels: 3
+  seg_feature_channels: 96
+  cls_feature_channels: 192
+  num_seg_classes: 2
+  num_cls_classes: 2
+  seg_head_mid_channels: 128
+  seg_dropout: 0.1
+  seg_upsample_scale: 4
+  cls_hidden_channels: 384
+  cls_dropout: 0.2
+  cls_head_mode: perceptguide
+  cls_mlp_layers: 2
+  temporal_cls_mode: perceptguide
+  temporal_transformer_layers: 1
+  temporal_transformer_heads: 4
+  neighbor_kernel_size: 3
+  use_memory_seg: true
+  video_seg_mode: memory
+  video_cls_mode: perceptguide
+  backbone:
+    name: swin_tiny
+    img_size: 224
+    pretrained: false
+    pretrained_checkpoint: ./pretrained_ckpt/swin_tiny_patch4_window7_224.pth
+  use_prompt: false
+
+data:
+  local_val_fraction: 0.1
+  split_seed: 2024
+  split_mode: grouped_stratified
+  num_workers: 0
+  num_frames: 10
+
+  batch_size_image_cls: 16
+  batch_size_video_cls: 4
+
+  use_balanced_sampler_image_cls: true
+  use_balanced_sampler_video_cls: true

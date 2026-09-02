@@ -535,6 +535,8 @@ def main() -> None:
             monitor_metric=cfg["trainer"].get("monitor_metric", "mean_score"),
             keep_best=cfg["trainer"].get("keep_best", 3),
             label_smoothing=cfg.get("loss", {}).get("cls_label_smoothing", 0.0),
+            auc_margin_weight=cfg.get("loss", {}).get("auc_margin_weight", 0.0),
+            auc_margin_margin=cfg.get("loss", {}).get("auc_margin_margin", 1.0),
             debug_cfg=debug_cfg,
         )
 

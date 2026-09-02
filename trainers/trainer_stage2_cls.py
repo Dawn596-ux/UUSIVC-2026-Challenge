@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch.optim import Optimizer
 from tqdm import tqdm
 
+from models.losses.auc_margin_loss import AUCMarginLoss
 from utils.auc_utils import binary_accuracy_from_logits, binary_auc_from_logits, stack_numpy
 from utils.checkpoint import save_checkpoint, save_topk_best_checkpoint
 from utils.diagnostics import DiagnosticsConfig, DiagnosticsHook
@@ -50,6 +51,8 @@ class Stage2ClsTrainer:
         monitor_metric: str = "mean_score",
         keep_best: int = 3,
         label_smoothing: float = 0.0,
+        auc_margin_weight: float = 0.0,
+        auc_margin_margin: float = 1.0,
         debug_cfg: Optional[Dict[str, Any]] = None,
     ):
         self.model = model.to(device)
@@ -67,6 +70,12 @@ class Stage2ClsTrainer:
         os.makedirs(self.save_dir, exist_ok=True)
         self.logger = get_logger(os.path.join(self.save_dir, "train_stage2_cls.log"))
         self.criterion = nn.CrossEntropyLoss(label_smoothing=float(label_smoothing))
+        # AUC-margin 排序正则：weight>0 才实例化、才参与前向——weight=0 时行为与
+        # 不接线的旧版本逐字节一致（baseline 可回退硬保证）。
+        self.auc_margin_weight = float(auc_margin_weight)
+        self.auc_margin: Optional[AUCMarginLoss] = (
+            AUCMarginLoss(margin=auc_margin_margin) if self.auc_margin_weight > 0 else None
+        )
         self.scaler = make_grad_scaler(enabled=use_amp)
         self.best_metric = best_metric
         self.best_epoch = best_epoch
@@ -205,12 +214,17 @@ class Stage2ClsTrainer:
             if logits is None:
                 raise ValueError("cls_logits is None for classification task.")
             loss = self.criterion(logits, batch["label_cls"])
+            loss_aux: Dict[str, float] = {}
+            if self.auc_margin is not None:
+                loss_rank = self.auc_margin(logits, batch["label_cls"])
+                loss = loss + self.auc_margin_weight * loss_rank
+                loss_aux["loss_auc"] = float(loss_rank.detach().cpu().item())
 
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        return {"loss_total": float(loss.detach().cpu().item())}
+        return {"loss_total": float(loss.detach().cpu().item()), **loss_aux}
 
     @torch.no_grad()
     def validate_one_loader(self, loader, loader_name: str) -> Dict[str, float]:
@@ -257,6 +271,7 @@ class Stage2ClsTrainer:
         steps_per_epoch = len(train_schedule)
 
         running_loss = 0.0
+        running_loss_auc = 0.0
         steps_done = 0
 
         # --- debug: diagnostics hook ---
@@ -289,6 +304,7 @@ class Stage2ClsTrainer:
 
             log_dict = self.train_one_step(batch)
             running_loss += log_dict["loss_total"]
+            running_loss_auc += log_dict.get("loss_auc", 0.0)
             steps_done += 1
 
             # --- debug: perf timing end ---
@@ -329,7 +345,10 @@ class Stage2ClsTrainer:
             diag_hook.__exit__()
 
         denom = max(steps_done, 1)
-        return {"train_loss": running_loss / denom}
+        return {
+            "train_loss": running_loss / denom,
+            "train_loss_auc": running_loss_auc / denom,
+        }
 
     def fit(self, loaders: Dict[str, Dict[str, Any]]):
         train_loaders = loaders["train"]
@@ -371,12 +390,16 @@ class Stage2ClsTrainer:
                 )
                 for k, v in val_log.items():
                     self.logger.info(f"    {k}: {v:.4f}")
+                if self.auc_margin is not None:
+                    self.logger.info(f"    train_loss_auc: {train_log['train_loss_auc']:.4f}")
             else:
                 self.logger.info(
                     f"[Epoch {epoch}/{self.max_epochs}] "
                     f"time={epoch_time:.1f}s "
                     f"train_loss={train_log['train_loss']:.4f}"
                 )
+                if self.auc_margin is not None:
+                    self.logger.info(f"    train_loss_auc: {train_log['train_loss_auc']:.4f}")
 
             latest_path = os.path.join(self.save_dir, "latest_stage2_cls.pth")
             latest_saved_path = save_checkpoint(
