@@ -67,6 +67,8 @@ def parse_args() -> argparse.Namespace:
                         help="Optional third ensemble member (no flip-TTA), loaded with the primary config. Explicit path only.")
     parser.add_argument("--ensemble-third-weight", type=float, default=0.5,
                         help="Weight of the third ensemble member when --ensemble-third-checkpoint is set.")
+    parser.add_argument("--ensemble-third-tasks", type=str, default="",
+                        help="Comma-separated tasks the third member applies to. Empty = all --ensemble-tasks tasks.")
     parser.add_argument("--which", choices=["best", "latest"], default="best",
                         help="Checkpoint choice when --checkpoint is not provided.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto",
@@ -153,10 +155,13 @@ def main() -> None:
             raise SystemExit("[Error] --ensemble-tasks requires --secondary-checkpoint: every ensemble task's extra member is the other checkpoint.")
         print(f"[Info] Ensemble Tasks: {sorted(ensemble_tasks)} (weight={args.ensemble_weight}, secondary_tta={bool(args.ensemble_secondary_tta)})")
     ensemble_third_model = None
+    ensemble_third_tasks: set = set()
     if args.ensemble_third_checkpoint:
         third_path = resolve_checkpoint_reference(args.ensemble_third_checkpoint, prefix=None)
         ensemble_third_model = load_model(cfg, third_path, device)
+        ensemble_third_tasks = {t.strip() for t in args.ensemble_third_tasks.split(",") if t.strip()} or set(ensemble_tasks)
         print(f"[Info] Ensemble Third Checkpoint: {third_path}")
+        print(f"[Info] Ensemble Third Tasks: {sorted(ensemble_third_tasks)}")
 
     ceus_processor = build_ceus_processor(cfg.get("data", {}))
     num_frames = int(cfg.get("data", {}).get("num_frames", 10))
@@ -176,7 +181,7 @@ def main() -> None:
             extras.append((model, float(args.ensemble_weight), False))
         else:
             extras.append((secondary_model, float(args.ensemble_weight), bool(args.ensemble_secondary_tta)))
-        if ensemble_third_model is not None:
+        if ensemble_third_model is not None and task in ensemble_third_tasks:
             extras.append((ensemble_third_model, float(args.ensemble_third_weight), False))
         return extras
 
@@ -236,6 +241,7 @@ def main() -> None:
             "secondary_tta": bool(args.ensemble_secondary_tta),
             "third_checkpoint": args.ensemble_third_checkpoint,
             "third_weight": args.ensemble_third_weight if ensemble_third_model is not None else None,
+            "third_tasks": sorted(ensemble_third_tasks) if ensemble_third_model is not None else None,
         } if ensemble_tasks else None,
         "tolerance": args.tolerance,
         "classification_samples": counts["classification"],
