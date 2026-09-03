@@ -19,7 +19,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from tqdm import tqdm
 
@@ -57,6 +57,16 @@ def parse_args() -> argparse.Namespace:
                         help="Model config for the secondary checkpoint. Defaults to --config. Required when the secondary checkpoint has a different graph (e.g. MemoryVideoSegHead).")
     parser.add_argument("--secondary-tasks", type=str, default="video_seg,image_cls",
                         help="Comma-separated task list served by the secondary checkpoint in mixed mode.")
+    parser.add_argument("--ensemble-tasks", type=str, default="",
+                        help="Comma-separated tasks to probability-ensemble with the other checkpoint (e.g. image_seg or image_cls,ceus_cls). Empty disables ensembling.")
+    parser.add_argument("--ensemble-weight", type=float, default=0.5,
+                        help="Weight of the extra (other) checkpoint in the probability average. The serving checkpoint has fixed weight 1.0.")
+    parser.add_argument("--ensemble-secondary-tta", action="store_true",
+                        help="Also apply flip-TTA to the extra checkpoint for image_seg ensembles (doubles that member's forwards).")
+    parser.add_argument("--ensemble-third-checkpoint", type=str, default=None,
+                        help="Optional third ensemble member (no flip-TTA), loaded with the primary config. Explicit path only.")
+    parser.add_argument("--ensemble-third-weight", type=float, default=0.5,
+                        help="Weight of the third ensemble member when --ensemble-third-checkpoint is set.")
     parser.add_argument("--which", choices=["best", "latest"], default="best",
                         help="Checkpoint choice when --checkpoint is not provided.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto",
@@ -133,6 +143,21 @@ def main() -> None:
         print(f"[Info] Secondary Config: {args.secondary_config or args.config}")
         print(f"[Info] Secondary Tasks: {sorted(secondary_tasks)}")
 
+    # 概率级集成（flag 门控，默认关闭）：v1 仅 image_seg/image_cls/ceus_cls；extra 永远是"另一个" checkpoint
+    ensemble_tasks = {t.strip() for t in args.ensemble_tasks.split(",") if t.strip()}
+    if ensemble_tasks:
+        bad = sorted(ensemble_tasks & {"video_seg", "ceus_seg"})
+        if bad:
+            raise SystemExit(f"[Error] --ensemble-tasks v1 scope excludes: {bad}")
+        if secondary_model is None:
+            raise SystemExit("[Error] --ensemble-tasks requires --secondary-checkpoint: every ensemble task's extra member is the other checkpoint.")
+        print(f"[Info] Ensemble Tasks: {sorted(ensemble_tasks)} (weight={args.ensemble_weight}, secondary_tta={bool(args.ensemble_secondary_tta)})")
+    ensemble_third_model = None
+    if args.ensemble_third_checkpoint:
+        third_path = resolve_checkpoint_reference(args.ensemble_third_checkpoint, prefix=None)
+        ensemble_third_model = load_model(cfg, third_path, device)
+        print(f"[Info] Ensemble Third Checkpoint: {third_path}")
+
     ceus_processor = build_ceus_processor(cfg.get("data", {}))
     num_frames = int(cfg.get("data", {}).get("num_frames", 10))
 
@@ -142,6 +167,19 @@ def main() -> None:
             return secondary_model
         return model
 
+    # 概率级集成路由：serving 模型仍由 _model_for 决定；extra 是"另一个" checkpoint（权重 w，serving 固定 1.0）
+    def _ensemble_extras_for(task: str):
+        if task not in ensemble_tasks:
+            return None
+        extras: List[Tuple[Any, float, bool]] = []
+        if task in secondary_tasks:
+            extras.append((model, float(args.ensemble_weight), False))
+        else:
+            extras.append((secondary_model, float(args.ensemble_weight), bool(args.ensemble_secondary_tta)))
+        if ensemble_third_model is not None:
+            extras.append((ensemble_third_model, float(args.ensemble_third_weight), False))
+        return extras
+
     # 1) Generate competition-format prediction files.
     classification: Dict[str, Dict[str, Any]] = {}
     counts = {"classification": 0, "segmentation": 0}
@@ -149,7 +187,7 @@ def main() -> None:
         task = entry.get("task")
         phase_root = Path(entry["_root"])
         if task == "image_seg":
-            predict_image_seg(_model_for(task), entry, phase_root, out_dir, device)
+            predict_image_seg(_model_for(task), entry, phase_root, out_dir, device, extra_models=_ensemble_extras_for(task))
             counts["segmentation"] += 1
         elif task == "video_seg":
             predict_video_seg(_model_for(task), entry, phase_root, out_dir, device, num_frames)
@@ -158,10 +196,10 @@ def main() -> None:
             predict_ceus_seg(_model_for(task), entry, phase_root, out_dir, device, ceus_processor)
             counts["segmentation"] += 1
         elif task == "image_cls":
-            classification[classification_key(entry)] = predict_image_cls(_model_for(task), entry, phase_root, device)
+            classification[classification_key(entry)] = predict_image_cls(_model_for(task), entry, phase_root, device, extra_models=_ensemble_extras_for(task))
             counts["classification"] += 1
         elif task == "ceus_cls":
-            classification[classification_key(entry)] = predict_ceus_cls(_model_for(task), entry, phase_root, device, num_frames)
+            classification[classification_key(entry)] = predict_ceus_cls(_model_for(task), entry, phase_root, device, num_frames, extra_models=_ensemble_extras_for(task))
             counts["classification"] += 1
 
     write_json(out_dir / "classification.json", classification)
@@ -192,6 +230,13 @@ def main() -> None:
         "secondary_checkpoint": args.secondary_checkpoint,
         "secondary_config": (args.secondary_config or args.config) if secondary_model else None,
         "secondary_tasks": sorted(secondary_tasks) if secondary_model else None,
+        "ensemble": {
+            "tasks": sorted(ensemble_tasks),
+            "weight": args.ensemble_weight,
+            "secondary_tta": bool(args.ensemble_secondary_tta),
+            "third_checkpoint": args.ensemble_third_checkpoint,
+            "third_weight": args.ensemble_third_weight if ensemble_third_model is not None else None,
+        } if ensemble_tasks else None,
         "tolerance": args.tolerance,
         "classification_samples": counts["classification"],
         "classification_keys": len(classification),
