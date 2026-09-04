@@ -57,6 +57,12 @@ def parse_args() -> argparse.Namespace:
                         help="Model config for the secondary checkpoint. Defaults to --config. Required when the secondary checkpoint has a different graph (e.g. MemoryVideoSegHead).")
     parser.add_argument("--secondary-tasks", type=str, default="video_seg,image_cls",
                         help="Comma-separated task list served by the secondary checkpoint in mixed mode.")
+    parser.add_argument("--tertiary-checkpoint", type=str, default=None,
+                        help="Optional third full-model checkpoint (checked before --secondary).")
+    parser.add_argument("--tertiary-config", type=str, default=None,
+                        help="Model config for the tertiary checkpoint. Defaults to --config. Required when it has a different graph (e.g. MemoryVideoSegHead).")
+    parser.add_argument("--tertiary-tasks", type=str, default="",
+                        help="Comma-separated task list served by the tertiary checkpoint. Empty = tertiary disabled; a task listed for both tertiary and secondary is served by tertiary.")
     parser.add_argument("--which", choices=["best", "latest"], default="best",
                         help="Checkpoint choice when --checkpoint is not provided.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto",
@@ -133,11 +139,24 @@ def main() -> None:
         print(f"[Info] Secondary Config: {args.secondary_config or args.config}")
         print(f"[Info] Secondary Tasks: {sorted(secondary_tasks)}")
 
+    tertiary_model = None
+    tertiary_tasks: set = set()
+    if args.tertiary_checkpoint:
+        tertiary_path = resolve_checkpoint_reference(args.tertiary_checkpoint, prefix=None)
+        tertiary_cfg = load_yaml(args.tertiary_config) if args.tertiary_config else cfg
+        tertiary_model = load_model(tertiary_cfg, tertiary_path, device)
+        tertiary_tasks = {t.strip() for t in args.tertiary_tasks.split(",") if t.strip()}
+        print(f"[Info] Tertiary Checkpoint: {tertiary_path}")
+        print(f"[Info] Tertiary Config: {args.tertiary_config or args.config}")
+        print(f"[Info] Tertiary Tasks: {sorted(tertiary_tasks)}")
+
     ceus_processor = build_ceus_processor(cfg.get("data", {}))
     num_frames = int(cfg.get("data", {}).get("num_frames", 10))
 
-    # 混合 checkpoint：secondary_tasks 内的任务用 secondary（默认 video_seg/image_cls，旧 encoder 未漂移），其余用主 checkpoint
+    # 混合 checkpoint 路由：tertiary 优先，其次 secondary（默认 video_seg/image_cls），其余用主 checkpoint
     def _model_for(task: str):
+        if tertiary_model is not None and task in tertiary_tasks:
+            return tertiary_model
         if secondary_model is not None and task in secondary_tasks:
             return secondary_model
         return model
@@ -192,6 +211,8 @@ def main() -> None:
         "secondary_checkpoint": args.secondary_checkpoint,
         "secondary_config": (args.secondary_config or args.config) if secondary_model else None,
         "secondary_tasks": sorted(secondary_tasks) if secondary_model else None,
+        "tertiary_config": (args.tertiary_config or args.config) if tertiary_model else None,
+        "tertiary_tasks": sorted(tertiary_tasks) if tertiary_model else None,
         "tolerance": args.tolerance,
         "classification_samples": counts["classification"],
         "classification_keys": len(classification),
