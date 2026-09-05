@@ -34,3 +34,6 @@ tau_calib.py
 fix_video_npz.py
 auto_pipeline.sh
 run_dinov2_pipeline.sh
+
+# Runtime logs (training/eval output, can reach 500M+)
+logs/
