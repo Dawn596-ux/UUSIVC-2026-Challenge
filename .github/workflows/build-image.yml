@@ -10,7 +10,10 @@ jobs:
       - name: Checkout code (public repo)
         uses: actions/checkout@v4
         with:
-          ref: fix-nsd-interp-cls
+          ref: experiment-video-temporal
+
+      - name: Record built commit
+        run: git rev-parse --short HEAD
 
       - name: Checkout weights (private repo)
         uses: actions/checkout@v4
@@ -20,7 +23,62 @@ jobs:
           lfs: true
           path: weights
 
-      - name: Build image
+      - name: Verify weights are real files (LFS smudged)
         run: |
-          docker build -t uusivc2026:baseline -f docker/Dockerfile .
-          docker images | grep -E 'uusivc2026|pytorch'
+          fail=0
+          for f in weights/best_stage2_cls_mem_rank1.pth weights/best_stage2_cls_aug2_rank1.pth \
+                   weights/best_stage2_cls_rank2.pth; do
+            s=$(stat -c%s "$f"); echo "$f : $s bytes"
+            if [ "$s" -lt 100000000 ]; then echo "::error::$f is only $s bytes — LFS smudge failed"; fail=1; fi
+          done
+          s=$(stat -c%s weights/swin_tiny_patch4_window7_224.pth); echo "weights/swin_tiny_patch4_window7_224.pth : $s bytes"
+          if [ "$s" -lt 50000000 ]; then echo "::error::swin_tiny is only $s bytes — LFS smudge failed"; fail=1; fi
+          exit $fail
+
+      - name: Build image
+        run: docker build -t dawnux/uusivc2026:260905 -f docker/Dockerfile .
+
+      - name: Sanity-check image contents (CPU, no GPU needed)
+        run: |
+          set -euo pipefail
+          echo "===== in-image run.sh ====="
+          docker run --rm --entrypoint /bin/bash dawnux/uusivc2026:260905 -c "cat /app/run.sh; echo; ls -l /app/checkpoints /app/pretrained_ckpt"
+          echo "===== in-image env sanity ====="
+          docker run --rm --entrypoint python dawnux/uusivc2026:260905 -c "
+          import os, torch, numpy, scipy
+          print('numpy', numpy.__version__, '| scipy', scipy.__version__)
+          assert numpy.__version__.startswith('1.'), 'numpy>=2 regression'
+          major, minor = scipy.__version__.split('.')[:2]
+          assert (int(major), int(minor)) < (1, 14), 'scipy>=1.14 regression'
+          for p in [
+              '/app/checkpoints/primary_mem_stage2_cls_rank1.pth',
+              '/app/checkpoints/secondary_main_stage2_cls_aug2_rank1.pth',
+              '/app/checkpoints/tertiary_old_stage2_cls_rank2.pth',
+          ]:
+              size = os.path.getsize(p)
+              print(p, size, 'bytes')
+              assert size > 100000000, 'task checkpoint too small (LFS pointer shipped?)'
+              sd = torch.load(p, map_location='cpu', weights_only=False)
+              assert isinstance(sd, dict) and len(sd) > 0
+              print(p, 'torch.load OK')
+          p = '/app/pretrained_ckpt/swin_tiny_patch4_window7_224.pth'
+          size = os.path.getsize(p)
+          print(p, size, 'bytes')
+          assert size > 50000000, 'swin_tiny too small (LFS pointer shipped?)'
+          sd = torch.load(p, map_location='cpu', weights_only=False)
+          assert isinstance(sd, dict) and len(sd) > 0
+          print(p, 'torch.load OK')
+          print('IMAGE SANITY: ALL GREEN')
+          "
+          echo "===== predict.py CLI ====="
+          docker run --rm --entrypoint python dawnux/uusivc2026:260905 -B /app/predict.py --help > /dev/null
+          echo "===== run.sh three-slot grep ====="
+          docker run --rm --entrypoint /bin/bash dawnux/uusivc2026:260905 -c "grep -q 'tertiary-tasks image_cls' /app/run.sh && grep -q 'secondary-tasks image_seg' /app/run.sh && echo ROUTE-FLAGS-OK"
+
+      - name: Login to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Push to Docker Hub
+        run: |
+          docker push dawnux/uusivc2026:260905
+          docker image inspect dawnux/uusivc2026:260905 --format 'digests={{json .RepoDigests}} size={{.Size}}'
